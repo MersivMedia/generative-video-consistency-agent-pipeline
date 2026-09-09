@@ -1,0 +1,271 @@
+{
+  "id": "the_signal",
+  "title": "The Signal",
+  "logline": "A lighthouse keeper and a stranded radio engineer pick up a transmission from a ship that sank forty years ago. What they choose to answer decides who gets to leave the island.",
+  "style_bible": "Anamorphic 35mm, 2.39:1, coastal fog, sodium-vapour practicals, deep teal shadows and warm amber interiors, handheld with slow drift, film grain.",
+  "characters": {
+    "wrenn": {
+      "name": "Ilse Wrenn",
+      "role": "Lighthouse keeper, late 50s",
+      "visual_lock_refs": [
+        "refs/wrenn_a.png",
+        "refs/wrenn_b.png"
+      ],
+      "voice_id": "pFZP5JQG7iQjIQuC4Bku",
+      "traits": [
+        "guarded",
+        "superstitious",
+        "physically fearless"
+      ],
+      "secret": "She was the radio operator who failed to answer the original distress call in 1984.",
+      "memory": [],
+      "relationships": {
+        "okonjo": 0
+      },
+      "appearance": "A woman in her late fifties. Short wavy iron-grey hair, cut practical and wind-blown. Gaunt weathered face with deep lines around the eyes and mouth, sun-and-salt worn skin. Lean wiry build, slightly stooped shoulders.",
+      "costume": "A faded TAN-KHAKI canvas coverall (one-piece boiler suit, colour like wet sand), sleeves rolled to the forearm, brass buttons, dark oil stains at the thighs. A charcoal-grey wool undershirt visible at the open collar. Scuffed DARK BROWN leather lace-up work boots. No hat, no jewellery, no glasses.",
+      "voice_name": "Lily - Velvety Actress (british, middle-aged)"
+    },
+    "okonjo": {
+      "name": "Daniel Okonjo",
+      "role": "Radio engineer, early 30s, stranded by the storm",
+      "visual_lock_refs": [
+        "refs/okonjo_a.png",
+        "refs/okonjo_b.png"
+      ],
+      "voice_id": "IKne3meq5aSn9XLyUdCD",
+      "traits": [
+        "methodical",
+        "compulsively honest",
+        "seasick"
+      ],
+      "secret": "He came to the island deliberately; his father was aboard the lost ship.",
+      "memory": [],
+      "relationships": {
+        "wrenn": 0
+      },
+      "appearance": "A Black man in his early thirties. Close-cropped black hair, short neat beard, high cheekbones, deep brown skin. Slim athletic build, average height.",
+      "costume": "An OLIVE-GREEN short-sleeved utility shirt with two buttoned chest pockets, worn over a black t-shirt. OLIVE-GREEN cargo trousers with thigh pockets. TAN-BROWN leather hiking boots with dark laces. A scuffed dark grey hard-shell RADIO EQUIPMENT CASE with metal latches, carried by hand or strapped across the chest.",
+      "voice_name": "Charlie - Deep, Confident"
+    },
+    "voice": {
+      "name": "The Voice on 2182",
+      "role": "Transmission from the MV Kestrel, lost 1984",
+      "visual_lock_refs": [],
+      "voice_id": "onwK4e9ZLuTAKqWW03F9",
+      "traits": [
+        "patient",
+        "knows more than it says"
+      ],
+      "secret": "It is repeating a conversation that has not happened yet.",
+      "memory": [],
+      "relationships": {},
+      "appearance": "No physical form. Never appears on screen.",
+      "costume": "None.",
+      "voice_name": "Daniel - Steady Broadcaster (radio)"
+    }
+  },
+  "world_facts": [
+    "The island is Skarnholm, nine miles offshore, reachable only by supply boat.",
+    "The storm has cut the causeway and the boat is not due for four days.",
+    "The lighthouse still carries a working 2182 kHz maritime distress set.",
+    "The MV Kestrel went down in 1984 with eleven aboard and was never found."
+  ],
+  "flags_declared": {
+    "answered_the_hail": "Wrenn or Okonjo transmitted a reply on 2182 kHz.",
+    "wrenn_confessed_1984": "Wrenn admitted she was on duty the night the Kestrel went down.",
+    "okonjo_revealed_father": "Okonjo admitted his father was aboard the Kestrel.",
+    "logbook_burned": "The 1984 logbook was destroyed rather than read.",
+    "coordinates_written": "The coordinates spoken by the Voice were written down and kept.",
+    "lamp_left_dark": "The lighthouse lamp was left unlit for a full night.",
+    "trusted_the_voice": "They followed an instruction given by the Voice.",
+    "stayed_silent": "They heard the hail and deliberately did not reply."
+  },
+  "chapters": [
+    {
+      "id": "ch1",
+      "title": "Nine Miles Offshore",
+      "premise": "A storm strands Okonjo at the lighthouse. Something answers on a dead frequency.",
+      "beats": [
+        {
+          "id": "b1_arrival",
+          "premise": "Okonjo washes up at the lighthouse door in the storm; Wrenn does not want him inside.",
+          "exit_conditions": "Okonjo is inside and the two have taken each other's measure.",
+          "branch_axis": "Does Wrenn extend hospitality or interrogate him?",
+          "sets_flags": [],
+          "requires_flags": [],
+          "shots": 5,
+          "head_shots": 3,
+          "tail_shots": 2
+        },
+        {
+          "id": "b2_the_hail",
+          "premise": "The 2182 set, unplugged for years, crackles with a voice giving the Kestrel's call sign.",
+          "exit_conditions": "The hail has been heard by both characters and a decision made about replying.",
+          "branch_axis": "Answer the transmission, or log it and stay silent?",
+          "sets_flags": [
+            "answered_the_hail",
+            "stayed_silent"
+          ],
+          "requires_flags": [],
+          "shots": 5,
+          "head_shots": 3,
+          "tail_shots": 2
+        },
+        {
+          "id": "b3_the_logbook",
+          "premise": "The Voice references a specific page of the 1984 logbook, which is still in the lighthouse.",
+          "exit_conditions": "The logbook is either read aloud or destroyed.",
+          "branch_axis": "Read the 1984 page together, or burn the logbook unread?",
+          "sets_flags": [
+            "logbook_burned",
+            "wrenn_confessed_1984"
+          ],
+          "requires_flags": [],
+          "shots": 5,
+          "head_shots": 3,
+          "tail_shots": 2
+        }
+      ]
+    },
+    {
+      "id": "ch2",
+      "title": "What The Water Kept",
+      "premise": "The Voice starts giving instructions. Following them works, which is the frightening part.",
+      "beats": [
+        {
+          "id": "b4_coordinates",
+          "premise": "The Voice recites a set of coordinates, twice, then asks whether anyone is writing them down.",
+          "exit_conditions": "The coordinates are either recorded or deliberately not recorded.",
+          "branch_axis": "Write down the coordinates, or refuse to give the Voice anything?",
+          "sets_flags": [
+            "coordinates_written"
+          ],
+          "requires_flags": [],
+          "shots": 4,
+          "head_shots": 2,
+          "tail_shots": 2
+        },
+        {
+          "id": "b5_the_ask",
+          "premise": "The Voice asks for the lamp to be doused for one night. Wrenn has never let the lamp go dark.",
+          "exit_conditions": "The lamp is doused or kept burning, and the cost is felt.",
+          "branch_axis": "Obey the Voice and douse the lamp, or keep the light and refuse?",
+          "sets_flags": [
+            "lamp_left_dark",
+            "trusted_the_voice"
+          ],
+          "requires_flags": [
+            "answered_the_hail|logbook_burned|coordinates_written"
+          ],
+          "shots": 5,
+          "head_shots": 3,
+          "tail_shots": 2
+        },
+        {
+          "id": "b6_okonjos_reason",
+          "premise": "Okonjo's equipment case reveals a 1984 crew manifest with a name circled.",
+          "exit_conditions": "Okonjo either tells the truth about why he came or lies convincingly.",
+          "branch_axis": "Okonjo confesses his father was aboard, or invents a reason?",
+          "sets_flags": [
+            "okonjo_revealed_father"
+          ],
+          "requires_flags": [],
+          "shots": 4,
+          "head_shots": 2,
+          "tail_shots": 2
+        }
+      ]
+    },
+    {
+      "id": "ch3",
+      "title": "One Berth",
+      "premise": "The supply boat is coming early and there is room for one. The Voice already knows which one.",
+      "beats": [
+        {
+          "id": "b7_the_reckoning",
+          "premise": "The Voice plays back, word for word, a conversation the two of them have not had yet.",
+          "exit_conditions": "Both characters understand the transmission is not from the past.",
+          "branch_axis": "Confront the Voice directly, or cut power to the set?",
+          "sets_flags": [],
+          "requires_flags": [
+            "answered_the_hail|stayed_silent|coordinates_written|lamp_left_dark"
+          ],
+          "shots": 5,
+          "head_shots": 3,
+          "tail_shots": 2
+        },
+        {
+          "id": "b8_the_debt",
+          "premise": "Consequence beat: whatever was hidden or destroyed earlier comes due. Payoffs land here.",
+          "exit_conditions": "The earlier choices have visibly cost or saved something.",
+          "branch_axis": "Face the consequence together, or let one of them carry it alone?",
+          "sets_flags": [],
+          "requires_flags": [
+            "logbook_burned|wrenn_confessed_1984"
+          ],
+          "shots": 5,
+          "head_shots": 3,
+          "tail_shots": 2
+        },
+        {
+          "id": "b9_one_berth",
+          "premise": "The boat arrives. There is room for one, and the coordinates matter now.",
+          "exit_conditions": "A final choice is made about who leaves and what is taken off the island.",
+          "branch_axis": "Who takes the berth, and do the coordinates leave with them?",
+          "sets_flags": [],
+          "requires_flags": [],
+          "shots": 6,
+          "head_shots": 3,
+          "tail_shots": 3
+        }
+      ]
+    }
+  ],
+  "payoff_contracts": [
+    {
+      "flag": "wrenn_confessed_1984",
+      "pays_off_in": "b8_debt_or_b9",
+      "description": "If Wrenn confessed, Okonjo can forgive or weaponize it in chapter 3. If she never did, the Voice says it for her."
+    },
+    {
+      "flag": "logbook_burned",
+      "pays_off_in": "b8_the_debt",
+      "description": "Burning the logbook destroys the only proof of the 1984 failure, which changes who is believed at the end."
+    },
+    {
+      "flag": "coordinates_written",
+      "pays_off_in": "b9_one_berth",
+      "description": "Without the coordinates the wreck is never found; with them, whoever leaves carries the wreck's location."
+    },
+    {
+      "flag": "lamp_left_dark",
+      "pays_off_in": "b7_the_reckoning",
+      "description": "A dark lamp is why the boat arrives early, and is also how the Voice proves it can be obeyed."
+    },
+    {
+      "flag": "okonjo_revealed_father",
+      "pays_off_in": "b9_one_berth",
+      "description": "If Okonjo told the truth, Wrenn can choose to give him the berth. If he lied, she cannot."
+    },
+    {
+      "flag": "trusted_the_voice",
+      "pays_off_in": "b9_one_berth",
+      "description": "Having obeyed the Voice once, its final instruction carries weight it would not otherwise have."
+    },
+    {
+      "flag": "stayed_silent",
+      "pays_off_in": "b7_the_reckoning",
+      "description": "Silence does not stop the Voice. It plays back the reply they never sent, word for word, which is how they learn it is not from the past."
+    }
+  ],
+  "shot_budget": {
+    "min_seconds": 4,
+    "max_seconds": 6,
+    "nominal_seconds": 5,
+    "head_nominal_seconds": 10,
+    "tail_nominal_seconds": 5,
+    "provider_max_seconds": 15,
+    "note": "Provider ceiling is 15s but MEASURED drift forces 4-6s. At 13-14s the model re-stages blocking, relights, changes location and re-ages characters INSIDE one take (verified: night rain threshold -> sunny balcony -> interior across 35s). Short shots hold identity near the conditioning frame. Heads are now 2-3 short shots rather than 1-2 long ones."
+  }
+}

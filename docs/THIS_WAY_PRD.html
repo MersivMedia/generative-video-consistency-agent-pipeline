@@ -1,0 +1,513 @@
+<html><head><meta charset='utf-8'></head><body style="font-family:Arial, Helvetica, sans-serif;font-size:11pt;line-height:1.5;color:#202124">
+<h1 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:20pt;color:#202124;font-weight:700">THIS WAY — Live Branching AI Film Engine</span></h1>
+<p><b>Product Requirements Document + Technical Architecture</b></p>
+<p>Version 0.1 · Status: Draft for build</p>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">1. Summary</span></h2>
+<p>A live, shared-audience film that generates itself ahead of the viewer. The audience votes at branch points; both possible futures render in parallel while voting is open; the winning branch becomes canon and the loser is discarded. A persistent "showrunner" layer holds characters, relationships, clues and consequences together so the result is a coherent story being <i>uncovered</i>, not an infinite content feed.</p>
+<p>Inspired by Henry Daubrez's THIS WAY demo (<a href="https://www.linkedin.com/posts/upskydown_the-first-live-ai-film-engine-with-a-showrunner-ugcPost-7500634679113469952-gMh1/">LinkedIn post</a>), which used MiniMax H3 Max via fal.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">The core insight</span></h3>
+<p>Generative video is now faster than playback. On fal's H3 Max a 5-second 768p clip renders in roughly 3 seconds of wall time — about 35x the throughput of the official MiniMax H3 endpoint. That inverts the interaction loop: the viewer never waits on a model, because the system speculatively pre-renders the next branches while the audience watches the current scene.</p>
+<p>Every architectural decision below serves two goals — <b>hide latency</b> and <b>prevent narrative drift</b>.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">Hard model constraints (verified)</span></h3>
+<table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:10pt;font-family:Arial, Helvetica, sans-serif">
+<tr>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'></th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>MiniMax H3 (base)</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>H3 Max (fal post-trained)</th>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Duration</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>5–15s</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>5–15s</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Resolution</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>up to 2K</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>480p / 768p</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Speed</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>baseline</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>~3s wall time for a 5s clip</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Modes</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>t2v, first-and-last-frame, reference-to-video, video edit</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>t2v, i2v</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Audio</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>native stereo</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>native stereo</td>
+</tr>
+</table><p></p>
+<p><b>Maximum clip length is 15 seconds.</b> This is the single most load-bearing constraint in the design and it drives §4, §5.2 and §8 below. An earlier draft of this document assumed 25-second shots; that is not achievable on any current endpoint.</p>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">2. Goals and non-goals</span></h2>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">Goals</span></h3>
+<ul>
+<li>Run a 20–30 minute live branching film for a shared audience with <b>zero visible wait state</b>.</li>
+<li>Make choices demonstrably matter: an early decision must visibly return later in the story.</li>
+<li>Maintain recognizable characters and a consistent visual grade across the whole run.</li>
+<li>Keep per-screening generation cost inside a known, predictable budget.</li>
+</ul>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">Non-goals (v1)</span></h3>
+<ul>
+<li>Open-ended text prompting by the audience.</li>
+<li>Per-user personal branches (v1 is one shared canonical stream).</li>
+<li>More than two choices per branch point.</li>
+<li>Audience-created characters or worlds.</li>
+<li>Native mobile app.</li>
+<li>Replay/VOD of arbitrary non-canon branch paths.</li>
+</ul>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">3. Success criteria</span></h2>
+<table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:10pt;font-family:Arial, Helvetica, sans-serif">
+<tr>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Metric</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Target</th>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Shot-to-shot gap (dead air)</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>≥95% of transitions under 500ms</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Character visual consistency</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Named characters recognizable in ≥80% of their shots (human-rated)</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Late payoffs per run</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>≥3 moments where an earlier choice visibly returns</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Generation deadline hit rate</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>≥90% of speculative jobs ready before vote close</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Fallback visibility</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Cutaway fallbacks used in &lt;10% of shots</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Cost per screening</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Within agreed ceiling (see §8)</td>
+</tr>
+</table><p></p>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">4. Experience</span></h2>
+<ol>
+<li>Audience joins a shared synced stream. Playback clock is server-authoritative — everyone sees the same frame.</li>
+<li>A <b>scene</b> plays — a cluster of 2–4 generated shots, 20–40 seconds total. Branch points are <b>per scene, not per shot</b>, because a single 10-second clip does not leave a room enough time to read two options and vote.</li>
+<li>Two options appear. They may be an action ("go through the door") or a line of dialogue ("tell her the truth").</li>
+<li>A live tally bar shows the vote in real time. Voting window closes a few seconds before the current shot ends.</li>
+<li>The winning branch — already rendered — plays immediately. The losing branch is discarded.</li>
+<li>A persistent "How we got here" canon log lets late joiners and forgetful viewers catch up on the choices made so far.</li>
+</ol>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">5. Technical architecture</span></h2>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">5.1 The Showrunner (story engine)</span></h3>
+<p>Not a free-form prompt machine. A structured, versioned state document mutated by an LLM under constraints.</p>
+<p style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;font-size:9.5pt;background:#f8f9fa;padding:10px;border-left:3px solid #dadce0">Story&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;{&nbsp;chapters[],&nbsp;beats[],&nbsp;characters{},&nbsp;world_facts[],&nbsp;flags{}&nbsp;}<br>Character&nbsp;=&nbsp;{&nbsp;name,&nbsp;visual_lock_refs[],&nbsp;voice_id,&nbsp;traits[],&nbsp;memory[],&nbsp;relationships{&nbsp;name:&nbsp;trust_int&nbsp;}&nbsp;}<br>Beat&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;{&nbsp;id,&nbsp;premise,&nbsp;exit_conditions,&nbsp;allowed_branches[2],&nbsp;sets_flags[],&nbsp;requires_flags[]&nbsp;}</p>
+<ul>
+<li>Chapter and beat skeleton is <b>authored ahead of time</b>. Branches within a beat are <b>generated</b>. This split is the anti-slop mechanism: the audience uncovers and shapes an existing plot rather than inventing a random one.</li>
+<li>On each turn the showrunner LLM receives current beat + full state and emits: the next shot's prompt, two choice options, any dialogue lines, and a set of <b>state deltas</b> (e.g. <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">trust.marlow -= 2</span>, <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">flags.knows_about_the_key = true</span>).</li>
+<li>Deltas are validated against a schema before commit. Invalid deltas are rejected and regenerated — the state machine, not the model, owns canon.</li>
+<li><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">requires_flags</span> gates future beats, so a choice made four scenes back can re-enter the story much later. This is what produces the late payoffs in §3.</li>
+<li>Every committed turn is appended to an immutable canon log (event-sourced), making the run fully reconstructable and auditable.</li>
+</ul>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">5.2 Speculative render pipeline</span></h3>
+<p>Scenes are the unit of branching. A scene is 2–4 shots of 5–15s each, 20–40s of playback.</p>
+<p>Two optimizations define the pipeline, and both exist to move waste off the expensive layer.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">Asymmetric lookahead depth</span></h3>
+<p>Prepared <b>frames</b> and generated <b>clips</b> differ in cost by roughly two orders of magnitude, so they get different lookahead depths:</p>
+<table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:10pt;font-family:Arial, Helvetica, sans-serif">
+<tr>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Layer</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Depth</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Leaves at depth</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Rationale</th>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Reference frames (i2i)</td>
+<td style='vertical-align:top;border:1px solid #dadce0'><b>2</b></td>
+<td style='vertical-align:top;border:1px solid #dadce0'>4</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>One level ahead of video, plus a scene of slack</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Video clips</td>
+<td style='vertical-align:top;border:1px solid #dadce0'><b>1</b> (current branch only)</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>2 heads</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Expensive. Never speculate further than the open vote</td>
+</tr>
+</table><p></p>
+<p><b>Frames only need to lead the video layer by one level.</b> An earlier draft specified</p>
+<p>depth 3–4 on the theory that cheap frames justify deep speculation. Measured over</p>
+<p>simulated screenings, that is wrong:</p>
+<table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:10pt;font-family:Arial, Helvetica, sans-serif">
+<tr>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Depth</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Frames generated</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Frames used</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Utilization</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Live peak</th>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>1</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>88</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>5</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>5.7%</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>22</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'><b>2</b></td>
+<td style='vertical-align:top;border:1px solid #dadce0'><b>166</b></td>
+<td style='vertical-align:top;border:1px solid #dadce0'><b>5</b></td>
+<td style='vertical-align:top;border:1px solid #dadce0'><b>3.0%</b></td>
+<td style='vertical-align:top;border:1px solid #dadce0'><b>44</b></td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>3</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>298</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>5</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>1.7%</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>87</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>4</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>538</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>5</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>0.9%</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>174</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>5</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>922</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>5</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>0.5%</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>347</td>
+</tr>
+</table><p></p>
+<p>Generation roughly <b>doubles per level while consumption stays flat</b>. The reason is</p>
+<p>structural: a frame only has to exist before the *clip that consumes it is</p>
+<p>submitted*, and clips are already submitted one scene ahead of playback. Depth beyond</p>
+<p>that buys nothing — it is speculation about speculation.</p>
+<p>The correct depth is derived, not chosen:</p>
+<p style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;font-size:9.5pt;background:#f8f9fa;padding:10px;border-left:3px solid #dadce0">depth&nbsp;=&nbsp;ceil(frame_generation_seconds&nbsp;/&nbsp;scene_seconds)&nbsp;+&nbsp;1</p>
+<p>At measured i2i speed (~10–15s per frame) against ~35s scenes that yields <b>2</b>. Only</p>
+<p>if frame generation became very slow relative to scene length (~120s per frame) would</p>
+<p>depth 5 be justified — and at that point the fix is a faster image model, not a</p>
+<p>deeper tree.</p>
+<p>Because the beat skeleton and branch axes are authored in advance, every frame the story could plausibly need is computable ahead of time. Frames are produced by <b>i2i from the character sheets and world plates</b> (§5.4), so identity and location locks propagate into the whole prepared tree.</p>
+<p>This buys four things beyond cost:</p>
+<ol>
+<li><b>No shot is ever unconditioned.</b> A prepared first frame exists whichever way the room votes, so <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">t2v</span> never has to be used as a fallback.</li>
+<li><b>First-and-last-frame becomes fully specified.</b> Both ends of every chain exist as real images before the clip is requested, so the model interpolates between fixed points instead of inventing an endpoint. This is the strongest continuity primitive available.</li>
+<li><b>Drift is caught before video spend.</b> A bad frame is visible and cheap to re-roll; a bad 10-second clip is only visible after you have paid for it.</li>
+<li><b>Discarded branches cost almost nothing</b> — waste lives on the image layer, not the clip layer.</li>
+</ol>
+<p>Live pruning: when a vote resolves, the dead subtree's frames are dropped and the surviving branch is extended one level deeper, holding depth constant as the story advances.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">Head / tail split within a scene</span></h3>
+<p>A scene divides into a <b>head</b> (the shots that play while voting is open) and a <b>tail</b> (the consequence shots that play after the vote resolves). Only heads are speculated; tails are generated just-in-time once the winner is known.</p>
+<p style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;font-size:9.5pt;background:#f8f9fa;padding:10px;border-left:3px solid #dadce0">t=0&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;play&nbsp;scene&nbsp;N&nbsp;head&nbsp;(n1,n2)&nbsp;&nbsp;&nbsp;─┬─&nbsp;speculate&nbsp;branch&nbsp;A&nbsp;head&nbsp;(2&nbsp;shots)<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─&nbsp;speculate&nbsp;branch&nbsp;B&nbsp;head&nbsp;(2&nbsp;shots)<br>t=+12s&nbsp;&nbsp;&nbsp;voting&nbsp;opens&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(window&nbsp;=&nbsp;head_duration&nbsp;−&nbsp;safety_margin)<br>t=+24s&nbsp;&nbsp;&nbsp;voting&nbsp;closes&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;winner&nbsp;promoted;&nbsp;loser&nbsp;head&nbsp;evicted<br>t=+24s&nbsp;&nbsp;&nbsp;──&nbsp;generate&nbsp;WINNER&nbsp;tail&nbsp;(2&nbsp;shots)&nbsp;just-in-time&nbsp;──<br>t=+26s&nbsp;&nbsp;&nbsp;play&nbsp;scene&nbsp;N&nbsp;tail&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tails&nbsp;land&nbsp;during&nbsp;head&nbsp;playback&nbsp;of&nbsp;the&nbsp;winner</p>
+<p>Per 4-shot branch point:</p>
+<table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:10pt;font-family:Arial, Helvetica, sans-serif">
+<tr>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Strategy</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Video generations</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Wasted</th>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Full speculation</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>2 × 4 = <b>8</b></td>
+<td style='vertical-align:top;border:1px solid #dadce0'>4 (50%)</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'><b>Head-only speculation</b></td>
+<td style='vertical-align:top;border:1px solid #dadce0'>2×2 head + 2 canon tail = <b>6</b></td>
+<td style='vertical-align:top;border:1px solid #dadce0'>2 (33%)</td>
+</tr>
+</table><p></p>
+<p>25% fewer clips per branch point, scaling with scene length. Two further wins fall out of it:</p>
+<ul>
+<li><b>Chaining is more reliable.</b> A speculative tail would have to chain from a head frame in a branch that may never become canon. A just-in-time tail chains from a frame that actually exists on the canon path.</li>
+<li><b>The tail is written knowing the vote.</b> With a single-phase turn, consequence shots must hedge across both outcomes. Split the turn and the tail is authored with the winner known, so the consequence is specific rather than vague. This is a writing-quality gain, not only a cost one.</li>
+</ul>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">Buffer math — why parallel job slots are a hard requirement</span></h3>
+<p>At ~6s of wall time per 10-second clip, generation beats playback by roughly 1.7x. The head/tail split keeps in-flight work bounded: <b>4 speculative head clips + 2 just-in-time tail clips</b>, versus 12 clips for flat depth-2 over 3-shot branches.</p>
+<p>Tail runway: two head shots give ~20–24s of playback; two tail clips cost ~12s serialized, ~6s parallel. Comfortable, but it is the tightest constraint in the system, so heads should be the <b>long</b> shots (12–15s) and tails the <b>short</b> ones (5–8s).</p>
+<p>The pipeline is still only viable with <b>genuine concurrent job slots</b> — enough parallelism to keep aggregate throughput above playback. This is a procurement requirement on the provider account, not an implementation detail to optimize later.</p>
+<ul>
+<li>Priority job queue (Redis / BullMQ). Jobs on the confirmed-canon path preempt speculative lookahead jobs.</li>
+<li><b>Lookahead depth 2</b> is the sweet spot: 2 branches, 4 jobs in flight. Depth 3 means 8 jobs and the waste multiplies faster than the benefit.</li>
+<li>~50% of speculative generations are discarded by design. That waste <i>is</i> the price of zero latency and must be budgeted, not optimized away.</li>
+<li><b>Every job has a deadline.</b> If a generation fails, is refused, or misses the deadline, the player cuts to a pre-rendered <b>cutaway</b> (ambient establishing shot, reaction close-up, or insert with voiceover) while the job is retried. The audience never sees a spinner — that is the entire product promise.</li>
+<li>Prompt validator pass before submission: sanitize, check character locks are present, retry once on refusal, then fall back to cutaway.</li>
+</ul>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">5.3 Character and visual consistency</span></h3>
+<p>The hardest problem, and the one the original demo openly admits still drifts.</p>
+<p>H3's native modes are stronger consistency primitives than the plain image-to-video an earlier draft assumed, and they are already built into the endpoint:</p>
+<ul>
+<li><b><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">reference-to-video</span></b> — a character is locked to a full <b>reference sheet</b> (8–12 frames across angles, expressions and lighting), not one or two hand-picked stills. Any shot containing a named character goes through this mode, never pure text-to-video.</li>
+<li><b><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">first-and-last-frame</span></b> — chain shots within a scene by pinning both ends. The last frame of shot N becomes the first frame of shot N+1, so a 30-second scene made of three 10-second clips reads as continuous motion instead of three separate generations.</li>
+<li><b>World plates</b> — each location is rendered once as a consistent set of establishing frames and reused as first-frames, so the lighthouse is demonstrably the same lighthouse in every scene.</li>
+<li><b>Style bible</b> — a fixed lens, grade and lighting clause appended to every prompt, plus a normalizing LUT pass in post so shots from different generations match.</li>
+<li><b>Voice locks</b> — one fixed TTS voice ID per character. Dialogue is synthesized from the showrunner's script and muxed under the video.</li>
+<li>Continuity checker (v1.5): a vision model spot-checks generated shots against reference sets and flags drift for re-generation.</li>
+</ul>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">5.4 Pre-production asset factory (ComfyUI, offline)</span></h3>
+<p>ComfyUI <b>must not sit in the live render path.</b> Local Wan/Hunyuan generation is tens of seconds to minutes per clip against H3 Max's ~3s, and Comfy Cloud caps concurrency at 1–5 jobs by tier (the free tier cannot call <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">/api/prompt</span> at all). Either route destroys the speculative buffer.</p>
+<p>Its real value is offline, and offline is where consistency is actually decided:</p>
+<ul>
+<li><b>Character reference sheets</b> — a per-character LoRA, or IPAdapter + FaceID, generating each character across many angles, expressions and lighting setups under a single identity lock. These become the input to H3's <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">reference-to-video</span>.</li>
+<li><b>World plates</b> — every location rendered once, graded to the style bible, reused as first-frames forever.</li>
+<li><b>Cutaway library</b> — the entire fallback set from §5.2, pre-generated and graded ahead of the screening. Zero live latency, and it is the insurance policy against missed deadlines.</li>
+<li><b>Drift repair between screenings</b> — run the continuity checker over a completed run, re-render problem frames in Comfy, fold improved references back into the locks.</li>
+</ul>
+<p>Requires a GPU host: Comfy Cloud on a paid tier, or a rented GPU instance. Consistency improves without costing a millisecond of live latency.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">5.4.1 Frame precompute — the same factory, running live</span></h3>
+<p>The asset factory is not only a pre-production step. Because the beat skeleton and branch axes are authored in advance, the frame tree described in §5.2 can be built by the <b>same i2i workflows</b>, both ahead of the screening and continuously during it.</p>
+<p style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;font-size:9.5pt;background:#f8f9fa;padding:10px;border-left:3px solid #dadce0">character&nbsp;sheets&nbsp;─┐<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─&nbsp;i2i&nbsp;─→&nbsp;prepared&nbsp;first/last&nbsp;frames,&nbsp;depth&nbsp;3–4<br>world&nbsp;plates&nbsp;─────┘&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─&nbsp;vote&nbsp;resolves&nbsp;→&nbsp;prune&nbsp;dead&nbsp;subtree<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─&nbsp;extend&nbsp;survivor&nbsp;one&nbsp;level&nbsp;deeper</p>
+<ul>
+<li><b>Pre-screening:</b> build the tree down to depth 2 from the opening beat. Zero live cost.</li>
+<li><b>During the screening:</b> every resolved vote frees the dead subtree's frames and triggers extension of the survivor. Image generation runs continuously at low priority, well behind clip jobs in the queue.</li>
+<li><b>Priority discipline:</b> frame jobs must never contend with clip jobs. Separate queue, strictly lower priority, and an abandon-on-deadline policy — a missing prepared frame degrades to i2v from the character sheet, which is the current behaviour anyway.</li>
+</ul>
+<p>The frames are what make <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">first-and-last-frame</span> mode fully specified, so this pipeline carries most of the continuity burden at a small fraction of the video budget.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">5.5 Live layer</span></h3>
+<ul>
+<li>Server-authoritative playback clock; clients sync to it. Shared broadcast semantics, not per-user video tags.</li>
+<li>WebSocket vote channel. One vote per session token, rate-limited, deduped. Live tally pushed to all clients.</li>
+<li>Output as <b>HLS</b>: each finished shot is transcoded to a segment and appended to a rolling playlist, so late joiners get a real stream rather than a chain of separate clips.</li>
+</ul>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">5.6 Stack</span></h3>
+<table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:10pt;font-family:Arial, Helvetica, sans-serif">
+<tr>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Layer</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Choice</th>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Video generation</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>fal (MiniMax H3 Max) primary; second provider as failover</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Showrunner LLM</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Claude / GPT-class model with strict JSON schema output</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Dialogue + audio</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>ElevenLabs per-character voice IDs; music/ambience bed per chapter</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Orchestrator</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Node/TypeScript or Python FastAPI</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Queue / state</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Redis (jobs, playback clock) + Postgres (canon log, votes, runs)</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Assembly</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>ffmpeg workers — mux, LUT, HLS segmenting</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Client</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Next.js + hls.js, WebSocket votes</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Storage / CDN</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>S3 or R2 behind Cloudflare</td>
+</tr>
+</table><p></p>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">6. Data model (v1)</span></h2>
+<ul>
+<li><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">runs</span> — one screening. Seed, story id, start time, status.</li>
+<li><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">canon_events</span> — append-only. Beat id, shot id, chosen branch, state deltas, timestamp.</li>
+<li><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">shots</span> — prompt, provider job id, mode (<span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">ref2v</span>/<span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">flf</span>/<span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">t2v</span>), status, asset URL, duration (5–15s), scene_id, is_canon, is_fallback.</li>
+<li><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">scenes</span> — ordered shot list, total duration, branch_point_id, <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">head_shots</span> / <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">tail_shots</span> counts. The unit of branching.</li>
+<li><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">frames</span> — prepared reference frames: branch path key, position (first/last), source refs used, tree depth, pruned_at. The image-layer tree.</li>
+<li><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">branch_points</span> — options offered, vote counts, window open/close, resolution.</li>
+<li><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">votes</span> — session token, branch point id, choice, timestamp.</li>
+<li><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">characters</span> — reference assets, voice id, current trait/memory snapshot.</li>
+</ul>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">7. Risks and mitigations</span></h2>
+<table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:10pt;font-family:Arial, Helvetica, sans-serif">
+<tr>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Risk</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Mitigation</th>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Visual/character drift</td>
+<td style='vertical-align:top;border:1px solid #dadce0'><span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">reference-to-video</span> against Comfy-built reference sheets + first-and-last-frame chaining + LUT normalization; accept residual drift as a known v1 limitation</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Generation cost from discarded branches</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Cap lookahead at depth 2; branch per scene not per shot; speculate at 480p and re-render canon at 768p; reuse plates and cutaways</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Missed deadlines / failed generations</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Deadline-aware queue + pre-rendered cutaway library + single automatic retry</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Model refusals or incoherent geography</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Prompt validator, sanitized retry, then cutaway</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Vote brigading</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Session tokens, rate limits, per-session single vote, anomaly detection on tally curves</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Narrative incoherence</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Authored beat skeleton, schema-validated state deltas, flag-gated payoffs</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Tail generation on the critical path</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>The head/tail split removes the cached alternate branch behind a tail shot, concentrating risk. Keep heads long (12–15s) for runway, tails short (5–8s) to render fast, and require the cutaway library to cover <b>every scene's tail position specifically</b>, not generically</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Frame precompute starving clip jobs</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Separate lower-priority queue for i2i; abandon frames on deadline; degrade to i2v from the character sheet rather than delaying a clip</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Insufficient parallel job slots</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Buffer collapses (see §5.2). Verify concurrency limits on the provider account BEFORE M3; load-test at 12 clips in flight</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Provider outage mid-screening</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Secondary video provider configured and warm; degrade to cutaway montage rather than stopping</td>
+</tr>
+</table><p></p>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">8. Cost model</span></h2>
+<p>Revised against the real 15-second ceiling and the head/tail split. One 25-minute screening:</p>
+<p><b>Video layer</b></p>
+<ul>
+<li>~150 canonical shots at ~10s each (not 40–60 at 25s — the earlier figure assumed an impossible clip length)</li>
+<li>Head-only speculation at 33% waste ⇒ <b>~225 clip generations per run</b></li>
+<li>Flat depth-2 speculation would have been ~300, so the split saves ~75 clips per screening</li>
+</ul>
+<p><b>Image layer</b></p>
+<ul>
+<li>Depth 2 frame tree, pruned and re-extended at every branch point</li>
+<li>~35–44 frames live at any moment, ~166 i2i generations across a full run</li>
+<li>At roughly two orders of magnitude below clip cost, this is <b>a rounding error against the video layer</b> while carrying most of the consistency burden</li>
+</ul>
+<p><b>Other:</b> TTS dialogue (cheap), ffmpeg/CDN (negligible).</p>
+<p>Per-run cost is dominated entirely by <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">clip_generations × per-clip price</span>. The design deliberately pushes waste onto the image layer, where it is nearly free.</p>
+<p>Levers, in order of impact:</p>
+<ol>
+<li><b>Head/tail split</b> — speculate only the shots that play during voting. 50% waste to 33%, ~75 fewer clips per screening.</li>
+<li><b>Fewer branch points</b> — branching per scene rather than per shot already cuts speculative waste by ~3x versus branching every shot, because only the scene's shots are duplicated, not every clip.</li>
+<li><b>Longer clips where motion allows</b> — 15s shots need 40% fewer generations than 10s shots for the same runtime. Apply to heads specifically, which also buys tail runway.</li>
+<li><b>Reuse</b> — cutaways, establishing shots and world plates are generated once and amortized across every screening.</li>
+<li><b>Asymmetric quality</b> — speculate at 480p, re-render only the winning canon branch at 768p.</li>
+<li><b>Shorter runtime</b> — a 15-minute screening costs 40% less than 25 minutes.</li>
+</ol>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">9. Milestones</span></h2>
+<p><b>M1 — Showrunner, text only.</b> State machine + LLM emits a coherent 3-chapter branch tree with characters, flags, trust deltas and at least three flag-gated late payoffs. Fully readable as a script. No video, no cost. <i>This is the go/no-go gate: if continuity fails in plain text, no video pipeline can rescue it.</i></p>
+<p><b>M1.5 — Asset factory.</b> ComfyUI (Cloud or rented GPU) builds character reference sheets, world plates and the cutaway library, all graded to the style bible. Also stands up the i2i frame-precompute workflow (§5.4.1) that the depth 3–4 frame tree runs on. Offline, no latency budget, gates M2 because M2 consumes its output.</p>
+<p><b>M2 — Single-branch render chain.</b> Text → <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">reference-to-video</span> and first-and-last-frame shots → ffmpeg mux → plays as one continuous film. Validates consistency tooling on the happy path and measures real drift.</p>
+<p><b>M3 — Speculative A/B queue.</b> Head-only branch speculation, just-in-time tail generation, the depth-2 frame tree with live prune-and-extend, deadline logic, cutaway fallback, hit-rate instrumentation. Verify provider concurrency limits before starting; load-test at 6 clips in flight.</p>
+<p><b>M4 — Live layer.</b> Synced HLS playback, WebSocket voting, canon log UI. Ten-person internal test.</p>
+<p><b>M5 — Public screening.</b> Hosted run with a live audience, full telemetry, cost reconciliation against §8.</p>
+<p><b>M6 — Learning loop.</b> Stand up the between-screenings agent harness (§10): scheduled QC sweeps, drift analysis on canon clips, telemetry-driven spine and prompt proposals, all human-gated. Requires M5 telemetry to exist first — there is nothing to learn from before a real audience has voted.</p>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">10. Operational architecture and the learning loop</span></h2>
+<p>The system splits into three tiers with a hard boundary between them. Getting this</p>
+<p>boundary wrong in either direction is costly: an agent in the live path makes latency</p>
+<p>nondeterministic, and no agent between screenings means nothing improves.</p>
+<p style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;font-size:9.5pt;background:#f8f9fa;padding:10px;border-left:3px solid #dadce0">LIVE&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;deterministic&nbsp;service&nbsp;—&nbsp;NO&nbsp;agent,&nbsp;NO&nbsp;subagents<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;showrunner&nbsp;state&nbsp;machine&nbsp;+&nbsp;job&nbsp;queue&nbsp;+&nbsp;player<br><br>BETWEEN&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;agent&nbsp;harness&nbsp;on&nbsp;a&nbsp;schedule<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;QC&nbsp;sweeps,&nbsp;asset&nbsp;regeneration,&nbsp;drift&nbsp;analysis,&nbsp;proposals<br><br>GATE&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;human&nbsp;review&nbsp;before&nbsp;anything&nbsp;merges</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">10.1 The live tier is not an agent</span></h3>
+<p>During a screening there is a ~24 second vote window, an audience watching, and a</p>
+<p>requirement that no shot ever shows a spinner. An agent loop is the wrong instrument:</p>
+<p>nondeterministic latency, variable token spend, and a failure mode where it does</p>
+<p>something creative at the worst possible moment.</p>
+<p>The showrunner in §5.1 is deliberately <b>not</b> an agent. It makes exactly one</p>
+<p>constrained LLM call per phase, validates the result against a schema, and rejects</p>
+<p>anything non-conforming. One call, bounded, verifiable. That is why the mode</p>
+<p>discipline in §5.3 actually holds — it is enforced by code, not by a model's good</p>
+<p>intentions. The live tier stays a boring deterministic service.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">10.2 The between-screenings tier is an agent harness</span></h3>
+<p>This is where open-ended work belongs, and it is the tier that makes the system</p>
+<p>improve:</p>
+<ul>
+<li>run objective QC across all assets; regenerate anything that fails</li>
+<li>vision-check new reference sheets in narrowly scoped parallel batches</li>
+<li>sample canon clips, measure drift against reference locks, re-roll bad frames</li>
+<li>read vote and drop-off telemetry, propose spine and prompt changes</li>
+<li>extend the frame tree for the next screening's opening beats</li>
+</ul>
+<p>Subagents are the right tool here specifically because verification is</p>
+<p>context-expensive and parallelizable, and because a fresh context is more critical</p>
+<p>than the context that produced the asset.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">10.3 Most of the learning signal is arithmetic, not judgement</span></h3>
+<table border="1" cellpadding="7" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:10pt;font-family:Arial, Helvetica, sans-serif">
+<tr>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>Signal</th>
+<th bgcolor="#f1f3f4" style='vertical-align:top;border:1px solid #dadce0'>What it tells you</th>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Vote distribution per branch</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>A 95/5 split means one option was never really a choice</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Drop-off timing</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Where the film loses people</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Deadline miss rate</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Whether the buffer math in §5.2 holds in the wild</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>QC neutrality / uniformity / distinctness</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Asset regressions, caught automatically</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Cutaway usage rate</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Pipeline health</td>
+</tr>
+<tr>
+<td style='vertical-align:top;border:1px solid #dadce0'>Payoff recognition</td>
+<td style='vertical-align:top;border:1px solid #dadce0'>Whether consequences actually land</td>
+</tr>
+</table><p></p>
+<p>These are analytics, not LLM work. The agent's job is narrower and more valuable:</p>
+<p>turn a measured pattern into a specific proposed change — *"branch b4 split 94/6</p>
+<p>across four screenings; option B is dead weight, here is a rewritten branch_axis."*</p>
+<p>A model staring at raw logs hoping for insight is waste.</p>
+<p><b>Objective checks must come first and gate the expensive ones.</b> Verified in</p>
+<p>development: a vision subagent spent ~400 seconds to report a colour cast that a</p>
+<p>border-region histogram measured exactly in under a second. Vision review is for</p>
+<p>judgements arithmetic cannot make — "does this expression read as grief" — and</p>
+<p>should only run on sets that already passed the cheap gates.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">10.4 Two guardrails</span></h3>
+<p><b>Do not optimize for votes.</b> Tuning plotlines toward whatever the crowd picks</p>
+<p>rebuilds precisely the infinite-content machine this design exists to avoid. The</p>
+<p>showrunner's purpose is to resist drift; a naive engagement-maximizing loop</p>
+<p>reintroduces drift with extra steps. Optimize for **completion rate and payoff</p>
+<p>recognition**, never for vote enthusiasm.</p>
+<p><b>The agent may never edit its own validator.</b> The validator is the safety layer —</p>
+<p>it is what makes unrenderable, identity-breaking and continuity-breaking shots</p>
+<p>impossible. An agent able to loosen its own constraints will eventually ship a broken</p>
+<p>screening. Prompts, spines, assets and reference sheets are fair game for automated</p>
+<p>proposals. Schema and validation rules stay human-gated.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">10.5 Where quality actually improves</span></h3>
+<p>For image and video quality, the long-run gain is not better prompts — it is</p>
+<p><b>better locks</b>. Accumulate approved frames across screenings, fold the strongest</p>
+<p>into the reference sheets, and once there is a corpus of a few hundred approved</p>
+<p>frames per character, train a per-character LoRA on it. Reference sheets are a decent</p>
+<p>identity lock; a LoRA trained on approved in-world frames is a much stronger one.</p>
+<p>This is the point where a GPU finally justifies itself (§5.4 notes pre-production</p>
+<p>needs none), and it remains an offline job either way.</p>
+<h3 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:12pt;color:#202124;font-weight:700">10.6 Procedural memory</span></h3>
+<p>Everything learned during development persists as a <b>skill</b>, not as tribal</p>
+<p>knowledge: the 15-second ceiling, the measured 38% waste figure, the</p>
+<p>prune-against-canon-path bug, silent <span style="font-family:'Roboto Mono', Consolas, 'Courier New', monospace;background:#f1f3f4;font-size:10pt">max_images</span> under-delivery, the grade-leak</p>
+<p>failure with its exact measured values, the QC thresholds. A fresh session picks all</p>
+<p>of it up cold and does not re-make the mistakes. The production learning loop is the</p>
+<p>same mechanism with telemetry feeding it instead of a developer noticing things.</p>
+<h2 style="font-family:Arial, Helvetica, sans-serif;margin-top:18pt"><span style="font-size:15pt;color:#1a73e8;font-weight:700">11. Open questions</span></h2>
+<ul>
+<li>Do losing branches get archived as a "what if" gallery, or hard-deleted? (Cost vs. novelty.)</li>
+<li>Is the vote plurality or does a supermajority unlock a rarer third path?</li>
+<li>Does the showrunner ever <i>override</i> the audience for dramatic reasons, and is that disclosed?</li>
+<li>Fixed screening times, or continuous always-on stream with rolling audience?</li>
+<li>Should tail shots ever be speculated for the highest-stakes branch points, buying safety back at the cost of the 33% waste figure?</li>
+<li><b>Biased rather than deeper speculation.</b> Uniform depth 2 is correct, but the two branches at that depth need not get equal treatment. If telemetry (§10.3) shows audiences reliably favour one branch <i>type</i> — cooperate over refuse, act over wait — the likely branch could be prepared at full quality and the unlikely one at reduced resolution, re-rendered only if it wins. This is a <i>quality</i> asymmetry within a fixed depth, not extra depth, and it is the right shape for the idea that deep speculation on a likely path could pay off.</li>
+<li>How many approved frames per character are needed before a LoRA beats a reference sheet? (§10.5)</li>
+<li>Does the between-screenings agent propose spine changes as PRs for review, or write directly to a staging spine that a human promotes?</li>
+<li>Is per-character LoRA training worth the GPU cost versus simply curating better reference sheets?</li>
+</ul>
+</body></html>

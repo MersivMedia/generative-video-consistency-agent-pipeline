@@ -1,0 +1,23 @@
+# secrets — never commit
+.env
+*.key
+*credentials*.json
+google_token.json
+
+# generated media: hundreds of MB, reproducible from canon + assets
+assets/
+renders/
+runs/
+!runs/.gitkeep
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# scratch
+_quarantine/
+_raw/
+_v*_*/
+*.txt
+!requirements.txt
