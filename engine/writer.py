@@ -58,6 +58,11 @@ _SHARED_RULES = """You do not own canon. You propose; a state machine validates 
   A generated shot placed the camera outside a lighthouse door and then showed open sea
   THROUGH the doorway, so the building had exterior on both sides and no interior. Also
   describe that interior/exterior content inside video_prompt itself.
+- DIALOGUE BUDGET: speech runs ~15.7 characters per second (measured from real
+  TTS output). A 5s shot holds about 69 characters INCLUDING spaces — roughly
+  one short sentence. This is enforced: over-long dialogue is rejected. Write
+  terse, spoken lines and split exchanges across shots rather than packing a
+  speech into one. Silence is allowed and often better.
 - Continuity is the whole product. Never contradict world_facts, flags, or memories."""
 
 HEAD_SYSTEM = f"""You are the SHOWRUNNER of a live branching AI film. You write the HEAD of one scene.

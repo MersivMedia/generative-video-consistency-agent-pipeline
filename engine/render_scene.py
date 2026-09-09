@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -141,7 +142,8 @@ def shot_prompt(shot: dict, style: str, chars: dict | None = None,
 def render_shot(shot: dict, beat_id: str, style: str, assets: Path,
                 outdir: Path, prev_last: Path | None, idx: int,
                 dry: bool, chars: dict | None = None,
-                voice_track: Path | None = None) -> tuple[Path | None, dict]:
+                voice_track: Path | None = None,
+                fallback=None, deadline: int | None = None) -> tuple[Path | None, dict]:
     """Map one showrunner shot onto the right H3 Max endpoint.
 
     AUDIO ORDER MATTERS. Dialogue is synthesized FIRST and passed in as
@@ -222,13 +224,35 @@ def render_shot(shot: dict, beat_id: str, style: str, assets: Path,
     if dry:
         return None, meta
 
-    res = fal.run(endpoint, inp, timeout=900)
-    url = (res.get("video") or {}).get("url")
-    if not url:
-        raise RuntimeError(f"no video in result: {json.dumps(res)[:400]}")
     out = outdir / f"shot_{idx:02d}.mp4"
-    fal.fetch(url, out)
+    res: dict = {}
+    try:
+        res = fal.run(endpoint, inp, timeout=deadline or 900)
+        url = (res.get("video") or {}).get("url")
+        if not url:
+            raise RuntimeError(f"no video in result: {json.dumps(res)[:400]}")
+        fal.fetch(url, out)
+    except Exception as exc:
+        # A live screening cannot stall: the next clip must exist before the
+        # current one ends. Rather than show a spinner, cut away to a
+        # character-free location shot and keep going. Cutaways are safe to
+        # substitute precisely because they contain no characters, so they
+        # cannot break the identity continuity everything else protects.
+        if not fallback:
+            raise
+        from cutaway import CutawayLibrary
+        lib = fallback if isinstance(fallback, CutawayLibrary) else CutawayLibrary()
+        alt = lib.take(beat_id)
+        if alt is None:
+            raise RuntimeError(
+                f"shot {idx} failed ({exc}) and the cutaway library is "
+                "exhausted — generate more cutaways for this location") from exc
+        print(f"      DEADLINE MISS on shot {idx} ({type(exc).__name__}) "
+              f"-> cutaway {alt.name}")
+        shutil.copyfile(alt, out)
+        meta["fallback"] = alt.name
     meta["file"] = str(out)
+    # empty when a cutaway was substituted — meta["fallback"] names the clip
     meta["inference"] = (res.get("timings") or {}).get("inference")
     return out, meta
 

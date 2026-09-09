@@ -103,8 +103,22 @@ def distinctness(paths: list[Path], size: int = 48, tol: float = 6.0) -> dict:
     profile differ substantially in pixels while being the SAME angle class.
     Verified false negative: a set where panels 2 and 4 were both ~90 degree
     profiles instead of the requested 45 degree three-quarters passed at
-    min delta 6.54. Only a vision subagent can confirm the angle LADDER;
-    distinctness only catches literal near-duplicates.
+    min delta 6.54.
+
+    ANGLE CORRECTNESS REMAINS UNMEASURED. Two cheap silhouette heuristics were
+    built and both FAILED on labelled plates, so neither is shipped:
+
+      1. mirror-symmetry of the centroid-aligned mask — inverted. A profile is
+         narrow and compact so it mirrors onto itself well (0.228) while a
+         front view with asymmetric arm pose scored 0.632.
+      2. shoulder-width / subject-height — worked on one character
+         (front 0.752 > back 0.47 > profile 0.153) and collapsed on the other
+         (front 0.317 ~ profile 0.330 ~ back 0.394), because framing and crop
+         differ per generation.
+
+    Both measure pose and framing, not facing. Angle correctness still needs a
+    vision check; see `preprod.py` ANGLES for why 45-degree plates are not
+    generated at all.
     """
     thumbs = {}
     for p in paths:

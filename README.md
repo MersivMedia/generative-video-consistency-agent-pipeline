@@ -40,6 +40,7 @@ engine/frame_planner.py image-layer lookahead tree: plan / prune / extend
 
 engine/fal_client.py    fal queue client (H3 Max endpoints, storage upload)
 engine/dialogue.py      ElevenLabs per-character TTS, padded for lip-sync reference
+engine/cutaway.py       character-free fallback clips + no-repeat runtime picker
 engine/render_scene.py  canon scene -> video via reference-to-video, ffmpeg mux
 
 skills/                 portable agent skills — see "Running it in an agent harness"
@@ -60,6 +61,7 @@ Rules that earn their keep:
 | Dialogue shots must be `ref2v` | Only reference-to-video accepts `reference_audio_urls`, which is what drives lip-sync |
 | Flags must be declared **and** settable in this beat | Prevents invented state |
 | Costume injected verbatim | Without it the model invents clothing per call and nothing is verifiable |
+| Dialogue must fit the shot | Measured 15.7 chars/sec; a 5s shot holds ~69 characters. Rejected at authoring time, not warned about after paying |
 
 ### Head / tail speculative rendering
 
@@ -219,6 +221,10 @@ python engine/qc.py assets/character/wrenn --costume "TAN-KHAKI coverall, brown 
 python engine/render_scene.py runs/<run>/canon.json --scene 0 --dry-run
 python engine/render_scene.py runs/<run>/canon.json --scene 0
 
+# Build the cutaway fallback library for a location (once, offline)
+python engine/cutaway.py stories/the_signal.json --beat b1_arrival --dry-run
+python engine/cutaway.py stories/the_signal.json --beat b1_arrival
+
 # Frame-tree utilization sweep
 python engine/frame_planner.py stories/the_signal.json --sweep
 ```
@@ -352,13 +358,27 @@ Long-run image quality comes from **better locks, not better prompts**: accumula
 
 ## Known limitations
 
-- **Three-quarter camera angles are not reliably promptable.** Verified across three generations and two characters with escalating specificity: `front`, `profile` and `back` pass every time; 45° three-quarters over-rotate toward profile on one side and under-rotate toward front on the other. They are dropped rather than shipped wrong — a wrong angle teaches the video model an identity the character never holds.
-- **`flf` chaining is retired.** Worse than `ref2v` on identity (6/10 vs 8/10), the only mode still re-staging mid-take at 5s, and it cannot lip-sync.
-- **`distinctness` cannot judge angle correctness** — it measures pixel difference, not semantics. A profile and a head-turned profile differ in pixels while being the same angle class.
-- Dialogue length is not yet reconciled with shot length; `dialogue.py` warns when speech overruns a shot rather than fixing it.
-- Cutaway fallback library (for missed generation deadlines) is specified but not built.
+- **`flf` chaining is retired.** Worse than `ref2v` on identity (6/10 vs 8/10),
+  the only mode still re-staging blocking mid-take at 5s, and it cannot
+  lip-sync because image-to-video accepts no audio input.
+- **Angle correctness is still not measurable.** Two silhouette heuristics were
+  built and both failed on labelled plates — see `qc.distinctness` for the
+  numbers. Front / profile / back are generated and verified; 45-degree
+  three-quarters are not generated at all. Confirming an angle *ladder* still
+  needs a vision check.
+- Cutaway coverage is per-location and must be generated for each beat before a
+  live screening; the library raises rather than stalling when exhausted.
+- Speech-rate budgeting assumes the three configured ElevenLabs voices. A new
+  voice needs re-measuring (`chars / audio_seconds`) and a new
+  `SPEECH_CHARS_PER_SEC`.
 
----
+### Fixed since first publication
+
+| Was | Now |
+|---|---|
+| Dialogue overruns warned about *after* paying for audio and video | Validator rejects at authoring time from a measured 15.7 chars/sec budget |
+| Cutaway fallback "specified but not built" | `engine/cutaway.py` + `CutawayLibrary`, wired into `render_scene.py`, failure path tested |
+| `distinctness` silently implied it checked angles | Documents exactly what it cannot see, with the two failed metrics recorded |
 
 ## License
 

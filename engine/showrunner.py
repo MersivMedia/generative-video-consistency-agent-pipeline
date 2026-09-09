@@ -233,6 +233,11 @@ class Showrunner:
     # prompt contains one MUST pin camera_side: a generated shot put the camera
     # outside a lighthouse door and then showed open sea through the doorway,
     # so the building had exterior on both sides and no interior at all.
+    # Measured, not guessed: per-line ElevenLabs output over our three voices
+    # ran 15.69-18.79 chars/sec (median 17.4). Budget at the slowest rate.
+    SPEECH_CHARS_PER_SEC = 15.7
+    DIALOGUE_HEADROOM = 0.6      # seconds of air so a line is not clipped
+
     BOUNDARY_WORDS = ("door", "doorway", "threshold", "window", "hatch",
                       "gate", "entry", "porch", "inside", "interior")
 
@@ -267,6 +272,25 @@ class Showrunner:
             if shot["mode"] == "t2v" and not (phase == "head" and i == 0):
                 raise DeltaRejected(
                     f"{phase} shot {i} must chain (flf) or lock (ref2v), not t2v")
+
+            # Dialogue must FIT the shot. Measured from real ElevenLabs output
+            # across our narrator voices: 15.7-18.8 chars/sec, so budget at the
+            # slowest observed rate and leave a beat of air. Previously this was
+            # only a post-hoc warning printed after the audio was already paid
+            # for and the shot already rendered; now it is authored correctly or
+            # rejected before anything is spent.
+            if shot.get("dialogue"):
+                chars = sum(len(l["line"]) for l in shot["dialogue"])
+                gaps = 0.35 * max(0, len(shot["dialogue"]) - 1)
+                speech = chars / self.SPEECH_CHARS_PER_SEC + gaps
+                budget = shot["duration"] - self.DIALOGUE_HEADROOM
+                if speech > budget:
+                    raise DeltaRejected(
+                        f"{phase} shot {i} dialogue is {chars} chars ~= "
+                        f"{speech:.1f}s of speech but the shot is "
+                        f"{shot['duration']}s (budget {budget:.1f}s). Cut to "
+                        f"<= {int(budget * self.SPEECH_CHARS_PER_SEC)} characters or "
+                        "split across shots.")
 
             # Lip-sync is only available on ref2v (it alone accepts
             # reference_audio_urls), so a dialogue shot on flf would have

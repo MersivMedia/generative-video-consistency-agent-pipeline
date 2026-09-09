@@ -184,6 +184,46 @@ believing either**. Vision called an angle set a "collapse"; the matrix showed a
 toward front, making front ≈ three-quarter-right the closest pair at 8.58.
 Different diagnosis, different fix.
 
+## 7.5 A metric that fails on labelled data does not ship
+
+Angle correctness looked measurable. Two cheap silhouette metrics were built
+against plates with known labels, and both failed:
+
+| Attempt | Result |
+|---|---|
+| mirror-symmetry of the centroid-aligned subject mask | **inverted** — profile 0.228, front 0.632. A profile silhouette is narrow and compact, so it mirrors onto itself well |
+| shoulder-width / subject-height | worked on one character (0.752 / 0.47 / 0.153), collapsed on the other (0.317 / 0.330 / 0.394) as framing differs per generation |
+
+Both measured pose and framing rather than facing. Neither shipped.
+
+The discipline that matters: **build the metric against known-good and
+known-bad examples before trusting it**. Retired failures kept in quarantine
+are exactly that labelled test set — a second reason not to delete them. A gate
+that silently mis-scores is worse than an acknowledged gap, because the gap
+gets a vision check while the bad gate gets believed.
+
+## 7.6 Deadline fallback: cut away, never stall
+
+Live generation will eventually miss a deadline — a provider 500, a safety
+rejection, a queue backup. The fix is not a bigger buffer, it is having
+something honest to cut to.
+
+Generate a small library of **character-free** location clips offline: the lamp
+turning, rain on glass, sea on rock, an empty wide. Character-free is the whole
+trick — every drift failure measured in this pipeline was a character failure,
+so a shot with no character in it is the one thing safe to substitute and
+reuse. Film grammar absorbs it completely; cutting to the lamp while someone
+decides is normal editing.
+
+Rules that make it work:
+
+- Reuse across screenings, but **never repeat within one** — track usage.
+- Falling back to another location's cutaway beats stalling.
+- When the library is exhausted, **raise**. A silent stall is the failure the
+  system exists to prevent; an explicit error says "generate more cutaways".
+- Test the failure path by monkeypatching the provider call to throw. The
+  fallback is the one code path that only ever runs on a bad day.
+
 ## 8. Verify edits actually applied
 
 Several string-replace edits **silently did nothing** — the anchor text had
