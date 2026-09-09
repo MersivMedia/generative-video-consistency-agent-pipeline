@@ -41,6 +41,9 @@ engine/frame_planner.py image-layer lookahead tree: plan / prune / extend
 engine/fal_client.py    fal queue client (H3 Max endpoints, storage upload)
 engine/dialogue.py      ElevenLabs per-character TTS, padded for lip-sync reference
 engine/cutaway.py       character-free fallback clips + no-repeat runtime picker
+engine/render_queue.py  M3 deadline-ordered speculative queue, branch pruning
+engine/simulate.py      screening simulator — does the buffer hold?
+tests/test_render_queue.py  8 behavioural tests (fake clock, deterministic)
 engine/render_scene.py  canon scene -> video via reference-to-video, ffmpeg mux
 
 skills/                 portable agent skills — see "Running it in an agent harness"
@@ -323,6 +326,82 @@ Every rule in `showrunner.py` — the 4-6s cap, mandatory re-anchoring, required
 
 ---
 
+## M3 — speculative queue and deadline logic
+
+Generation runs ahead of playback, both futures are in flight before the vote
+lands, and anything late degrades to a cutaway instead of a stall.
+
+### Concurrency is the entire budget
+
+```
+1 x 5s clip serial      22.2s wall     0.22x realtime   buffer collapses
+4 x 5s clips parallel    4.6s wall     4.32x realtime   3.5x speedup
+```
+
+Measured on fal, not assumed. Parallel render slots are a hard requirement.
+
+Also found and fixed here: reference plates were being **re-uploaded on every
+shot** — 16.9MB per shot, which is where the gap between 5.6s of inference and
+22.2s of wall time went. Content-hash upload cache: **3.3s cold, 0.047s warm,
+71x faster.**
+
+### The tail deadline was structurally impossible
+
+The simulator's first useful output was a failure. At `head_shots=3` with
+voting closing at 60% of the head:
+
+```
+tail runway   6.0s
+tail render   7.1-9.1s   (5.6-6.1 inference + 1.5-3.0 overhead)
+result        9/9 tails missed, at EVERY slot count from 1 to 8
+```
+
+More slots never helped, because **a tail cannot begin before the vote it
+depends on**. Parallelism cannot buy time that does not exist. The fix was
+parametric, not architectural:
+
+| head_shots | vote closes | tail runway | misses |
+|---|---|---|---|
+| 3 | 60% | 6.0s | 9/9 |
+| 3 | 40% | 9.0s | 2.1/9 |
+| **4** | **40%** | **12.0s** | **0/9** |
+
+`head_shots: 4` and `vote_close_frac: 0.40` are now story-file canon, with the
+derivation recorded inline so nobody "optimizes" them back.
+
+### Verified schedule
+
+```
+slots  miss rate  verdict
+1      0.944      BUFFER COLLAPSES
+2      0.500      BUFFER COLLAPSES
+3      0.000      HOLDS
+4      0.000      HOLDS
+```
+
+Three slots is the floor; four is the operating point. 91 clips per screening,
+36 speculative and discarded, 275s of film.
+
+### Queue semantics
+
+`RenderQueue` is deadline-ordered with explicit priorities — `CRITICAL`,
+`TAIL`, `SPECULATIVE`, `PREFETCH` — and knows about branches so it can abandon
+work the audience already voted away. Eight behavioural tests cover priority
+inversion, earliest-deadline-first, whole-branch pruning, promotion on vote,
+expiry of speculative work while retaining late canon work, error surfacing,
+and real thread overlap.
+
+Pruning is by **branch id across the beat**, not "the other option" — the frame
+planner previously grew 76 to 200 live jobs by cancelling only the immediate
+loser and orphaning its subtree.
+
+```bash
+python engine/simulate.py stories/the_signal.json --sweep
+python tests/test_render_queue.py
+```
+
+---
+
 ## Roadmap
 
 | Milestone | Status |
@@ -330,8 +409,8 @@ Every rule in `showrunner.py` — the 4-6s cap, mandatory re-anchoring, required
 | M1 — text-only showrunner | **done** |
 | M1.5 — asset factory + QC gates | **done** |
 | M2 — single-branch render chain | **done** |
-| M3 — speculative A/B queue, deadline logic, cutaway fallback | next |
-| M4 — live layer: synced HLS, WebSocket voting, canon log UI | planned |
+| M3 — speculative A/B queue, deadline logic, cutaway fallback | **done** |
+| M4 — live layer: synced HLS, WebSocket voting, canon log UI | next |
 | M5 — public screening | planned |
 | M6 — learning loop (see below) | planned |
 

@@ -23,6 +23,7 @@ segment, not the full endpoint id.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -69,6 +70,49 @@ def _req(url: str, data: bytes | None = None, method: str | None = None,
         h["Content-Type"] = "application/json"
     h.update(extra or {})
     return urllib.request.Request(url, data=data, headers=h, method=method)
+
+
+# Reference plates are the SAME files on every shot of every scene, but each
+# render was re-uploading all of them: 16.9MB per shot, which is where the
+# 22s wall time went against only 5.6s of inference. fal URLs are stable, so
+# cache by content hash. Keyed on hash rather than path so a regenerated plate
+# with the same filename correctly misses the cache.
+_UPLOAD_CACHE = Path(os.environ.get("FAL_UPLOAD_CACHE",
+                                    Path.home() / ".cache/thisway/fal_uploads.json"))
+
+
+def _load_cache() -> dict:
+    try:
+        return json.loads(_UPLOAD_CACHE.read_text())
+    except Exception:
+        return {}
+
+
+def _save_cache(d: dict) -> None:
+    try:
+        _UPLOAD_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _UPLOAD_CACHE.write_text(json.dumps(d))
+    except Exception:
+        pass
+
+
+def _digest(p: Path) -> str:
+    h = hashlib.sha256()
+    h.update(p.read_bytes())
+    return h.hexdigest()[:32]
+
+
+def upload_cached(path: Path) -> str:
+    """upload() with a content-hash cache. Use for anything reused across shots."""
+    p = Path(path)
+    key = _digest(p)
+    cache = _load_cache()
+    if key in cache:
+        return cache[key]
+    url = upload(p)
+    cache[key] = url
+    _save_cache(cache)
+    return url
 
 
 def upload(path: Path) -> str:

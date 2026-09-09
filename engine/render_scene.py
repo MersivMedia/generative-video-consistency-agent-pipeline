@@ -185,7 +185,7 @@ def render_shot(shot: dict, beat_id: str, style: str, assets: Path,
         refs = refs[:cap]
         inp["reference_image_urls"] = (
             ["<uploaded>"] * len(refs) if dry
-            else [fal.upload(p) for p in refs])
+            else [fal.upload_cached(p) for p in refs])
         inp["aspect_ratio"] = "21:9"
         used_refs = refs
         for i, p in enumerate(refs, 1):
