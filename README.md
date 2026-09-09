@@ -41,6 +41,9 @@ engine/frame_planner.py image-layer lookahead tree: plan / prune / extend
 engine/fal_client.py    fal queue client (H3 Max endpoints, storage upload)
 engine/dialogue.py      ElevenLabs per-character TTS, padded for lip-sync reference
 engine/render_scene.py  canon scene -> video via reference-to-video, ffmpeg mux
+
+skills/                 portable agent skills — see "Running it in an agent harness"
+docs/AGENT_HARNESS.md   what to automate, what to keep deterministic
 ```
 
 ### The showrunner does not own canon
@@ -221,6 +224,79 @@ python engine/frame_planner.py stories/the_signal.json --sweep
 ```
 
 `--dry-run` is the cheapest bug-finder in the repo. It caught a 29MB payload (against a ~10MB limit), duplicate reference filenames, and mutually-exclusive API fields — all before spending a cent.
+
+---
+
+## Running it in an agent harness
+
+This pipeline was built and is operated from inside an agent harness
+([Hermes](https://hermes-agent.nousresearch.com/docs), OpenClaw, Claude Code —
+anything with shell access and scheduled tasks). Full guide:
+**[docs/AGENT_HARNESS.md](docs/AGENT_HARNESS.md)**.
+
+The important decision is the boundary:
+
+```
+LIVE      deterministic service, NO agent
+          state machine + queue + player, one schema-validated LLM call per phase
+          a 15s vote window cannot absorb agent latency
+
+BETWEEN   agent harness, scheduled
+          QC sweeps · regeneration · drift analysis · prompt and spine proposals
+
+GATE      human review before merge
+```
+
+### Install the skills
+
+`skills/` contains two portable skills — plain markdown with YAML frontmatter,
+loadable by any harness:
+
+| Skill | Covers |
+|---|---|
+| `branching-ai-film-engine` | showrunner design, head/tail split, lookahead depth, milestones |
+| `generative-video-consistency` | reference locks, QC gates, mode discipline, harness boundary |
+
+```bash
+cp -r skills/* ~/.hermes/skills/     # Hermes
+cp -r skills/* ~/.claude/skills/     # OpenClaw / Claude Code
+```
+
+They ship with `qc.py` and `normalize.py` so an agent can gate assets without
+this repo checked out.
+
+### What to automate, ranked
+
+| Task | Automate? | Why |
+|---|---|---|
+| QC sweeps | **yes, fully** | measurement only, no spend, no writes |
+| Drift analysis between renders | **yes, fully** | read-only, high signal |
+| Normalization | **yes** | deterministic, reversible |
+| Asset regeneration | **with approval gate** | costs money |
+| Prompt revisions | **propose only** | needs a human read of the output |
+| Story-spine edits | **propose only** | authorial judgement |
+| Validator / schema changes | **never** | the agent will relax constraints instead of meeting them |
+| Anything in the live path | **never** | latency is the product |
+
+Two guardrails that are not negotiable: **never optimize for votes** (it
+converges on mush and rebuilds the infinite-content machine the showrunner exists
+to prevent — optimize for completion and payoff recognition), and **the agent may
+never edit its own validator**.
+
+### The loop that produced this repo
+
+```
+run_story.py          text only, no spend — does the narrative work?
+preprod.py            one API call per angle, per emotion
+normalize.py + qc.py  gate numerically before spending vision or video budget
+[agent]               scoped vision review — two questions, pre-built grid
+render_scene.py       --dry-run, then for real
+[agent]               drift analysis vs the previous render
+[human]               approve, then encode the finding in the validator
+```
+
+Every rule in `showrunner.py` — the 4-6s cap, mandatory re-anchoring, required
+`camera_side` — started as a measurement in that second-to-last step.
 
 ---
 
