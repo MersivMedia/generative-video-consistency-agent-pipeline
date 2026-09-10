@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>THIS WAY — live</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+<style>
+  :root{
+    --bg:#07090c; --ink:#e8e6e1; --dim:#7d8590;
+    --amber:#e0a355; --teal:#2f6f76; --line:#1b2026;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  .wrap{max-width:1100px;margin:0 auto;padding:24px 20px 60px}
+  h1{font-size:15px;letter-spacing:.28em;text-transform:uppercase;
+     font-weight:500;margin:0 0 2px}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:18px}
+  video{width:100%;aspect-ratio:2.39/1;background:#000;display:block;
+        border:1px solid var(--line)}
+  .bar{display:flex;gap:18px;flex-wrap:wrap;align-items:center;
+       padding:10px 12px;border:1px solid var(--line);border-top:none;
+       font-size:12px;color:var(--dim)}
+  .bar b{color:var(--ink);font-weight:500}
+  .dot{width:7px;height:7px;border-radius:50%;background:#3b4149;
+       display:inline-block;margin-right:6px}
+  .dot.on{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+
+  .vote{margin-top:22px;border:1px solid var(--line);padding:16px;
+        opacity:.35;transition:opacity .3s}
+  .vote.live{opacity:1;border-color:var(--teal)}
+  .vote h2{font-size:11px;letter-spacing:.2em;text-transform:uppercase;
+           color:var(--dim);margin:0 0 12px;font-weight:500}
+  .opts{display:grid;gap:10px;grid-template-columns:1fr 1fr}
+  @media(max-width:680px){.opts{grid-template-columns:1fr}}
+  button{all:unset;cursor:pointer;padding:14px 16px;border:1px solid var(--line);
+         background:#0c1014;transition:.15s;position:relative;overflow:hidden}
+  button:hover:not(:disabled){border-color:var(--amber)}
+  button:disabled{cursor:default;opacity:.5}
+  button.mine{border-color:var(--amber)}
+  .fill{position:absolute;inset:0;background:var(--teal);opacity:.22;
+        width:0;transition:width .4s}
+  .lbl{position:relative;display:flex;justify-content:space-between;gap:12px}
+  .pct{color:var(--dim);font-variant-numeric:tabular-nums}
+  .clock{font-size:26px;color:var(--amber);font-variant-numeric:tabular-nums;
+         margin-bottom:10px}
+  .log{margin-top:26px;border-top:1px solid var(--line);padding-top:14px}
+  .log h2{font-size:11px;letter-spacing:.2em;text-transform:uppercase;
+          color:var(--dim);margin:0 0 10px;font-weight:500}
+  .row{display:flex;gap:14px;padding:5px 0;font-size:12px;color:var(--dim);
+       border-bottom:1px solid #10141a}
+  .row b{color:var(--ink);font-weight:500;min-width:130px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>This Way</h1>
+  <div class="sub" id="sub">connecting…</div>
+
+  <video id="v" playsinline muted autoplay></video>
+  <div class="bar">
+    <span><span class="dot" id="dot"></span><b id="status">offline</b></span>
+    <span>playhead <b id="ph">0.0s</b></span>
+    <span>buffer <b id="buf">0.0s</b></span>
+    <span>watching <b id="viewers">0</b></span>
+    <span>beat <b id="beat">—</b></span>
+  </div>
+
+  <div class="vote" id="vote">
+    <h2>The audience decides</h2>
+    <div class="clock" id="clock">—</div>
+    <div class="opts" id="opts"></div>
+  </div>
+
+  <div class="log">
+    <h2>Canon</h2>
+    <div id="canon"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let mine = null, lastBeat = null;
+
+// ---- playback -------------------------------------------------------
+// The server owns the playhead. We never seek on our own; we correct toward
+// the server's position when we drift, because a shared vote is meaningless
+// if viewers are looking at different moments.
+const video = $('v');
+const SRC = '/stream/index.m3u8';
+if (Hls.isSupported()) {
+  const hls = new Hls({ liveSyncDurationCount: 2, lowLatencyMode: true });
+  hls.loadSource(SRC); hls.attachMedia(video);
+  hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(()=>{}));
+  // The playlist grows as clips render; a 404 early on is normal, not fatal.
+  hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) hls.startLoad(); });
+} else {
+  video.src = SRC;
+}
+
+// ---- state ----------------------------------------------------------
+const ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/live');
+
+ws.onopen  = () => { $('dot').classList.add('on'); $('status').textContent='live'; };
+ws.onclose = () => { $('dot').classList.remove('on'); $('status').textContent='ended'; };
+
+ws.onmessage = e => {
+  const s = JSON.parse(e.data);
+  if (s.type === 'vote_ack') return;
+
+  $('sub').textContent = s.title + ' — a film that decides itself';
+  $('ph').textContent  = s.playhead.toFixed(1)+'s';
+  $('buf').textContent = s.buffer_ahead.toFixed(1)+'s';
+  $('viewers').textContent = s.viewers;
+  $('beat').textContent = s.beat || '—';
+
+  // resync if we have drifted more than 2s from the authoritative playhead
+  if (!video.paused && Math.abs(video.currentTime - s.playhead) > 2) {
+    try { video.currentTime = s.playhead; } catch (_) {}
+  }
+
+  if (s.beat !== lastBeat) { mine = null; lastBeat = s.beat; }
+
+  const box = $('vote');
+  box.classList.toggle('live', s.vote_open);
+  $('clock').textContent = s.vote_open ? s.vote_remaining.toFixed(1)+'s' : 'closed';
+
+  const total = Object.values(s.tally).reduce((a,b)=>a+b,0) || 1;
+  $('opts').innerHTML = '';
+  (s.choices||[]).forEach(c => {
+    const n = s.tally[c.id] || 0, pct = Math.round(n/total*100);
+    const b = document.createElement('button');
+    b.disabled = !s.vote_open;
+    if (mine === c.id) b.classList.add('mine');
+    b.innerHTML = `<span class="fill" style="width:${pct}%"></span>
+      <span class="lbl"><span>${c.label}</span><span class="pct">${n} · ${pct}%</span></span>`;
+    b.onclick = () => { mine = c.id; ws.send(JSON.stringify({type:'vote',choice:c.id})); };
+    $('opts').appendChild(b);
+  });
+
+  $('canon').innerHTML = (s.canon||[]).slice().reverse().map(c =>
+    `<div class="row"><b>${c.beat}</b><span>chose ${c.winner}</span>
+     <span>${c.voters} voting</span><span>${c.at}s</span></div>`).join('')
+    || '<div class="row"><span>nothing decided yet</span></div>';
+};
+</script>
+</body>
+</html>

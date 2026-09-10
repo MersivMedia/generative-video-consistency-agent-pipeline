@@ -7,6 +7,7 @@ google_token.json
 # generated media: hundreds of MB, reproducible from canon + assets
 assets/
 renders/
+renders/_live/
 runs/
 !runs/.gitkeep
 

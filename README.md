@@ -43,7 +43,11 @@ engine/dialogue.py      ElevenLabs per-character TTS, padded for lip-sync refere
 engine/cutaway.py       character-free fallback clips + no-repeat runtime picker
 engine/render_queue.py  M3 deadline-ordered speculative queue, branch pruning
 engine/simulate.py      screening simulator — does the buffer hold?
+engine/live.py          screening state, HLS playlist, vote tally, viewer hub
+engine/server.py        FastAPI + WebSocket screening server
+engine/viewer.html      the audience page (no build step)
 tests/test_render_queue.py  8 behavioural tests (fake clock, deterministic)
+tests/test_live.py      end-to-end: concurrent viewers, real votes
 engine/render_scene.py  canon scene -> video via reference-to-video, ffmpeg mux
 
 skills/                 portable agent skills — see "Running it in an agent harness"
@@ -402,6 +406,74 @@ python tests/test_render_queue.py
 
 ---
 
+## M4 — the live layer
+
+```bash
+python engine/server.py stories/the_signal.json --demo --port 8137
+# open http://127.0.0.1:8137
+```
+
+`--demo` replays already-rendered clips instead of calling the video API, so
+the whole live layer can be exercised for free. Everything except the render
+call is identical between demo and live.
+
+### The server owns the playhead
+
+Every viewer must see the same frame at the same moment, because a vote is
+meaningless if the room is looking at different points in the story. Clients
+report nothing that affects state — they receive the authoritative position and
+correct toward it when they drift more than 2s. A late joiner is dropped into
+the current moment, never the beginning.
+
+```
+GET  /                    the viewer (single page, no build step)
+GET  /stream/index.m3u8   EVENT playlist, appended as clips land
+GET  /segments/{name}     the clips themselves
+WS   /live                state push + vote intake
+```
+
+HLS rather than WebRTC because this is a shared screening, not a conversation:
+a few seconds of *uniform* latency is fine, per-viewer streams are not. An
+EVENT playlist (no `ENDLIST` until the screening ends) is what makes the
+speculative model work — the player keeps re-fetching and picks up segments
+that did not exist when it connected.
+
+### Vote integrity
+
+One vote per connection per beat, tallied server-side, frozen at close. The
+tally is broadcast so the room can watch the split, but the winner is computed
+from the server's own record and never from a client-reported total. Ties break
+deterministically toward the first choice, because an unrecorded coin flip
+makes the canon log a lie.
+
+Verified against a running server with real WebSocket clients:
+
+```
+PASS state pushed: seq 8 -> 8
+PASS late joiner at 10.42s of 31.1s published (20.68s buffered)
+PASS invalid choice rejected by the server
+votes accepted: 5/5
+
+canon log:
+  b2_the_hail   winner=A  tally={'A': 3, 'B': 2}  voters=5  at=34.0s
+```
+
+The 3/2 split was recorded exactly, and the decision is permanent in the canon
+log with its vote count and playhead position.
+
+### Buffer health in production
+
+Live measurements during a demo screening: playhead 39.5s, published 62.2s,
+**22.7s of rendered material ahead of playback**. That is the M3 schedule
+holding in a real process rather than a simulator.
+
+Two fixes found by testing rather than reading: `HEAD` on the playlist and
+segments returned 405, which makes some players and CDNs abandon the stream
+before ever issuing a `GET`; and the playlist must be served `no-store` or a
+cached copy silently freezes a viewer at the moment they connected.
+
+---
+
 ## Roadmap
 
 | Milestone | Status |
@@ -410,8 +482,8 @@ python tests/test_render_queue.py
 | M1.5 — asset factory + QC gates | **done** |
 | M2 — single-branch render chain | **done** |
 | M3 — speculative A/B queue, deadline logic, cutaway fallback | **done** |
-| M4 — live layer: synced HLS, WebSocket voting, canon log UI | next |
-| M5 — public screening | planned |
+| M4 — live layer: synced HLS, WebSocket voting, canon log UI | **done** |
+| M5 — public screening | next |
 | M6 — learning loop (see below) | planned |
 
 ### The learning loop (M6)
