@@ -34,6 +34,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.responses import FileResponse, HTMLResponse, Response  # noqa: E402
 import uvicorn  # noqa: E402
 
+import identity  # noqa: E402
+import ladder  # noqa: E402
 from live import Hub, Playlist, Screening, Segment, VOTE_CLOSE_FRAC  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -59,9 +61,26 @@ class Server:
         self.screening = Screening(title=self.story.get("title", "THIS WAY"))
         self.hub = Hub()
         STREAM.mkdir(parents=True, exist_ok=True)
-        for old in STREAM.glob("*"):
-            old.unlink()
-        self.playlist = Playlist(STREAM)
+
+        # Persistence: replay the journal instead of wiping the stream dir. A
+        # crash mid-screening previously lost the entire canon log — what the
+        # audience chose is the product's memory, so it is append-only and
+        # fsynced rather than snapshotted.
+        self.journal = identity.Journal(STREAM / "screening.jsonl")
+        resumed = identity.restore(self.screening, self.journal, STREAM)
+        self.resumed = resumed["segments"] > 0
+        if self.resumed:
+            print(f"  resumed: {resumed['segments']} segments, "
+                  f"{resumed['decisions']} decisions"
+                  + (f", {resumed['missing']} segment files missing"
+                     if resumed["missing"] else ""))
+            self.playlist = Playlist(STREAM)
+            self.playlist.segments = list(self.screening.segments)
+        else:
+            for old in STREAM.glob("*.ts"):
+                old.unlink()
+            self.playlist = Playlist(STREAM)
+
         self.app = self._build()
         self._pool = self._demo_clips() if demo else []
 
@@ -75,7 +94,12 @@ class Server:
         return clips + cutaways
 
     def _publish(self, src: Path, beat: str, kind: str = "shot") -> Segment:
-        """Remux a clip into an MPEG-TS segment and append it to the playlist.
+        """Encode one clip into every ladder rung and publish it.
+
+        MUST be called via asyncio.to_thread: this runs three ffmpeg encodes
+        (~3s wall) and calling it directly from the event loop froze every
+        HTTP request and state push for the duration, which showed up as the
+        server timing out while a segment was being prepared.
 
         The clips are progressive MP4 (ftyp + moov + mdat) — each one a
         self-contained movie. hls.js cannot splice those into a continuous
@@ -87,48 +111,47 @@ class Server:
         signalling, so a playlist can grow one clip at a time. The remux is
         stream-copy (no re-encode) and costs ~50ms.
         """
-        dest = STREAM / f"seg_{len(self.playlist.segments):04d}.ts"
-
-        # Every source clip is its own movie starting at PTS 1.4, so a naive
-        # remux produces segments that ALL start at the same timestamp. The
-        # player sees time jump backwards at each boundary and stalls after the
-        # first segment — the observed "plays briefly, then freezes".
-        #
-        # Fix: stamp each segment with the running offset of the playlist, so
-        # presentation timestamps increase monotonically across the whole
-        # screening, exactly as they would from a single continuous encode.
+        index = len(self.playlist.segments)
         offset = sum(s.seconds for s in self.playlist.segments)
 
-        # The source clips are ~9 Mbps at 1536x672 — a 5.6MB download before
-        # the first frame appears, which is why startup dragged on mobile.
-        # Re-encode to ~2 Mbps at 1280 wide: 5.6MB -> 1.24MB, a 4.5x cut, at
-        # 2.7s of CPU per clip. That fits comfortably inside the ~20s buffer
-        # the scheduler maintains, so it costs latency we already have.
+        # Every source clip is its own movie starting at PTS 1.4, so a naive
+        # remux makes every segment claim the same timestamp; the player sees
+        # time run backwards at each boundary and freezes. Stamp each segment
+        # with the playlist's running offset so presentation timestamps
+        # increase monotonically across the whole screening.
         #
-        # -g 48 forces a keyframe every 2s so the player can start decoding
-        # partway into a segment instead of waiting for the next one.
-        subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(src),
-             "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "main",
-             "-b:v", "1800k", "-maxrate", "2000k", "-bufsize", "3000k",
-             "-g", "48", "-keyint_min", "48", "-sc_threshold", "0",
-             "-vf", "scale=1280:-2",
-             "-c:a", "aac", "-b:a", "96k", "-ac", "2",
-             "-bsf:v", "h264_mp4toannexb",
-             "-muxdelay", "0", "-muxpreload", "0",
-             "-output_ts_offset", f"{offset:.3f}",
-             "-f", "mpegts", str(dest)],
-            check=True, capture_output=True)
+        # All ladder rungs are encoded in parallel from the same source with an
+        # identical GOP, so a mid-stream quality switch lands on a keyframe.
+        paths = ladder.encode_all(src, STREAM, index, offset)
+        dest = paths["mid"]          # the reference rung for duration probing
         seg = Segment(path=dest, seconds=probe(dest), beat_id=beat, kind=kind)
         self.playlist.append(seg)
         self.screening.segments.append(seg)
+        for r in ladder.LADDER:
+            ladder.write_variant(STREAM, r, self.screening.segments,
+                                 self.playlist.finished)
+        ladder.write_master(STREAM)
+        self.journal.append("segment", file=f"{index:04d}",
+                            seconds=seg.seconds, beat=beat, segment_kind=kind,
+                            index=index)
         self.screening.seq += 1
         return seg
 
     # -- the screening loop ---------------------------------------------
     async def run_story(self) -> None:
         beats = [b for ch in self.story["chapters"] for b in ch["beats"]]
-        self.screening.started_at = time.time()
+        if self.resumed:
+            # Rewind the clock so the playhead lands where it left off rather
+            # than jumping to the end of already-published media.
+            self.screening.started_at = time.time() - sum(
+                s.seconds for s in self.screening.segments)
+            decided = {c["beat"] for c in self.screening.canon}
+            beats = [b for b in beats if b["id"] not in decided]
+            print(f"  resuming with {len(beats)} beats remaining")
+        else:
+            self.screening.started_at = time.time()
+            self.journal.append("start", at=self.screening.started_at,
+                                title=self.screening.title)
         pool = list(self._pool)
         idx = 0
 
@@ -139,7 +162,8 @@ class Server:
             # --- publish the head -----------------------------------------
             head_start = self.screening.published_seconds
             for _ in range(head_n):
-                self._publish(pool[idx % len(pool)], beat["id"])
+                await asyncio.to_thread(
+                    self._publish, pool[idx % len(pool)], beat["id"])
                 idx += 1
             head_seconds = self.screening.published_seconds - head_start
             await self.push()
@@ -157,17 +181,23 @@ class Server:
                 {"id": "A", "label": beat.get("branch_axis", "hold")},
                 {"id": "B", "label": "the other way"},
             ], window=head_seconds * VOTE_CLOSE_FRAC)
+            self.journal.append("vote_open", beat=beat["id"],
+                                choices=self.screening.choices,
+                                window=head_seconds * VOTE_CLOSE_FRAC)
             await self.push()
 
             await self._sleep_until_vote_close()
             winner = self.screening.close_vote()
+            if self.screening.canon:
+                self.journal.append("decision", record=self.screening.canon[-1])
             await self.push()
 
             # --- tail: rendered knowing the winner, on the critical path ---
             # Runway is the remaining 60% of the head as WATCHED, which is the
             # 12s the simulator predicted at head_shots=4.
             for _ in range(tail_n):
-                self._publish(pool[idx % len(pool)], beat["id"])
+                await asyncio.to_thread(
+                    self._publish, pool[idx % len(pool)], beat["id"])
                 idx += 1
             await self.push()
 
@@ -218,21 +248,48 @@ class Server:
         async def index():
             return VIEWER.read_text()
 
-        @app.api_route("/stream/index.m3u8", methods=["GET", "HEAD"])
-        async def playlist():
-            body = (STREAM / "index.m3u8").read_text()
-            # no-store: the playlist changes as clips land, and a cached copy
-            # silently freezes a viewer at whatever the stream looked like when
-            # they first connected.
-            return Response(body, media_type="application/vnd.apple.mpegurl",
+        @app.api_route("/stream/master.m3u8", methods=["GET", "HEAD"])
+        async def master():
+            f = STREAM / "master.m3u8"
+            if not f.exists():
+                return Response(status_code=404)
+            return Response(f.read_text(),
+                            media_type="application/vnd.apple.mpegurl",
                             headers={"Cache-Control": "no-store"})
 
-        @app.api_route("/segments/{name}", methods=["GET", "HEAD"])
-        async def segment(name: str):
-            p = STREAM / name
+        @app.api_route("/stream/{name}.m3u8", methods=["GET", "HEAD"])
+        async def variant(name: str):
+            # index.m3u8 is kept as an alias for the mid rung so existing
+            # single-rendition clients keep working.
+            f = STREAM / (f"{name}.m3u8" if name != "index" else "mid.m3u8")
+            if not f.exists():
+                return Response(status_code=404)
+            # no-store: the playlist grows as clips land, and a cached copy
+            # silently freezes a viewer wherever the stream was when they
+            # first connected.
+            return Response(f.read_text(),
+                            media_type="application/vnd.apple.mpegurl",
+                            headers={"Cache-Control": "no-store"})
+
+        @app.api_route("/segments/{rung}/{name}", methods=["GET", "HEAD"])
+        async def segment(rung: str, name: str):
+            p = STREAM / rung / name
             if not p.exists():
                 return Response(status_code=404)
             return FileResponse(p, media_type="video/mp2t")
+
+        @app.get("/token")
+        async def token():
+            """Mint a signed viewer token.
+
+            NOT login. A screening is anonymous; this only has to count one
+            person once. Identity previously came from id(websocket) — a memory
+            address, which CPython recycles aggressively (2000 short-lived
+            objects yielded 2 distinct ids in measurement). That let a
+            reconnecting viewer inherit a departed viewer's ballot, and did not
+            survive a refresh.
+            """
+            return {"token": identity.mint()}
 
         @app.get("/state")
         async def state():
@@ -242,17 +299,26 @@ class Server:
         async def live(ws: WebSocket):
             await ws.accept()
             await self.hub.add(ws)
-            viewer_id = f"v{id(ws)}"
+            # The client sends its stored token as a query param. An absent or
+            # forged token gets a freshly minted identity rather than a
+            # rejection: a screening should never refuse an audience member.
+            viewer_id = identity.verify(ws.query_params.get("token"))
+            if viewer_id is None:
+                viewer_id = identity.verify(identity.mint())
             await ws.send_text(json.dumps(self.screening.state()))
             try:
                 while True:
                     raw = await ws.receive_text()
                     msg = json.loads(raw)
                     if msg.get("type") == "vote":
-                        ok = self.screening.cast(viewer_id, msg.get("choice", ""))
+                        choice = msg.get("choice", "")
+                        ok = self.screening.cast(viewer_id, choice)
                         await ws.send_text(json.dumps(
                             {"type": "vote_ack", "accepted": ok}))
                         if ok:
+                            self.journal.append("vote", viewer=viewer_id,
+                                                choice=choice,
+                                                beat=self.screening.beat_id)
                             await self.push()
             except WebSocketDisconnect:
                 pass

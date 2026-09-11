@@ -100,7 +100,7 @@ let mine = null, lastBeat = null;
 // corrections to once every 10s. Drift of a few seconds is invisible to an
 // audience; a stalled player is not.
 const video = $('v');
-const SRC = '/stream/index.m3u8';
+const SRC = '/stream/master.m3u8';   // ABR ladder: low / mid / high
 let started = false, lastSeek = 0;
 
 video.addEventListener('playing', () => { started = true; note('playing'); });
@@ -150,7 +150,24 @@ document.body.addEventListener('click', () => {
 });
 
 // ---- state ----------------------------------------------------------
-const ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/live');
+// A stable viewer token, minted once and kept in localStorage, so a refresh
+// or reconnect does not become a second ballot. Identity used to be the
+// server-side id() of the websocket — a recycled memory address.
+let ws;
+(async () => {
+  let tok = localStorage.getItem('thisway_token');
+  if (!tok) {
+    try {
+      tok = (await (await fetch('/token')).json()).token;
+      localStorage.setItem('thisway_token', tok);
+    } catch (_) { tok = ''; }
+  }
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/live?token=${encodeURIComponent(tok||'')}`);
+  wire(ws);
+})();
+
+function wire(ws) {
 
 ws.onopen  = () => { $('dot').classList.add('on'); $('status').textContent='live'; };
 ws.onclose = () => { $('dot').classList.remove('on'); $('status').textContent='ended'; };
@@ -221,6 +238,7 @@ ws.onmessage = e => {
      <span>${c.voters} voting</span><span>${c.at}s</span></div>`).join('')
     || '<div class="row"><span>nothing decided yet</span></div>';
 };
+}
 </script>
 </body>
 </html>

@@ -47,6 +47,9 @@ engine/live.py          screening state, HLS playlist, vote tally, viewer hub
 engine/server.py        FastAPI + WebSocket screening server
 engine/viewer.html      the audience page (no build step)
 engine/audio_qc.py      speech detector — MEASURED AND REJECTED, kept as record
+engine/identity.py      signed viewer tokens + append-only screening journal
+engine/ladder.py        adaptive bitrate ladder (low/mid/high), aligned GOPs
+tests/test_identity.py  8 tests: identity, forgery, replay, ladder alignment
 tests/test_render_queue.py  8 behavioural tests (fake clock, deterministic)
 tests/test_live.py      end-to-end: concurrent viewers, real votes
 engine/render_scene.py  canon scene -> video via reference-to-video, ffmpeg mux
@@ -516,6 +519,69 @@ docstring, for the same reason as the angle metric: a gate that silently
 mis-scores is worse than an acknowledged gap. `--lowpass` at 250 Hz remains as
 a deterministic opt-in fallback.
 
+### Identity, persistence, and adaptive bitrate
+
+Three constraints a public screening cannot ship without — and a real bug found
+while closing them.
+
+**Viewer identity was a memory address.** `id(websocket)` looked like a
+per-connection identifier and is not: CPython recycles addresses aggressively,
+and 2000 short-lived objects produced **3 distinct ids** in direct measurement.
+So a reconnecting viewer could inherit a departed viewer's ballot, identity did
+not survive a refresh, and N tabs meant N votes. The M4 tests missed it because
+they held every socket open at once, so no address was ever recycled.
+
+Replaced with signed HMAC tokens minted on first contact and kept in
+`localStorage`. Verified over the wire:
+
+```
+tab1 (token A)   accepted=True
+tab2 (token A)   accepted=True
+phone (token B)  accepted=True
+tally={'A': 2, 'B': 0}  total ballots=2
+=> 3 connections, 2 identities, 2 ballots
+```
+
+This is deliberately not login. A screening is anonymous; it only has to count
+one person once. Clearing storage earns a new identity — what this fixes is the
+accidental case (refresh, reconnect, second tab), which is what actually
+corrupts a live tally.
+
+**Persistence is an append-only journal**, one fsynced JSON line per state
+transition, replayed on boot. A snapshot would let a crash rewrite a decision
+that has already been shown; the canon log is the product's memory. Verified by
+killing the process mid-screening:
+
+```
+resumed: 20 segments, 3 decisions
+resuming with 6 beats remaining
+```
+
+Already-decided beats are skipped and the clock is rewound so the playhead
+lands where it left off. A journalled segment whose media file is gone is
+skipped rather than offered to the player.
+
+**Adaptive bitrate ladder**, measured per 5s clip:
+
+```
+rung   width   video    size      rate       encode
+low     640     800k    0.62 MB   1.0 Mbps   1.6s
+mid     960    1400k    1.01 MB   1.6 Mbps   2.1s
+high   1280    2400k    1.70 MB   2.7 Mbps   3.0s
+```
+
+Rungs share an identical GOP with scene-cut detection off, so a mid-stream
+switch lands on a keyframe instead of glitching. They encode in parallel, so
+6.7s of serial work costs ~3s wall. The master playlist lists lowest-first:
+starting low and climbing reaches a picture faster than starting high and
+stalling.
+
+**And the bug that ladder encoding exposed:** three ffmpeg passes called
+directly from the async loop froze *every* HTTP request and state push for ~3s
+per clip — the server timed out entirely while preparing a segment. Moved to
+`asyncio.to_thread`; responses now land in 3-17ms during encoding. Any
+CPU-bound work in an async server is a liveness bug, not a performance one.
+
 ### Buffer health in production
 
 Live measurements during a demo screening: playhead 39.5s, published 62.2s,
@@ -568,23 +634,35 @@ Long-run image quality comes from **better locks, not better prompts**: accumula
   the only mode still re-staging blocking mid-take at 5s, and it cannot
   lip-sync because image-to-video accepts no audio input.
 - **Angle correctness is still not measurable.** Two silhouette heuristics were
-  built and both failed on labelled plates — see `qc.distinctness` for the
-  numbers. Front / profile / back are generated and verified; 45-degree
-  three-quarters are not generated at all. Confirming an angle *ladder* still
-  needs a vision check.
-- Cutaway coverage is per-location and must be generated for each beat before a
+  built and both failed on labelled plates — see `qc.distinctness`. Front /
+  profile / back are generated and verified; 45-degree three-quarters are not
+  generated at all.
+- **Invented speech is prevented by prompt, not by gate.** The audio directive
+  works, but `audio_qc.py` proves the detector that would enforce it does not
+  discriminate (rain modulates at syllable rate). A `--lowpass` fallback exists.
+- **Sybil resistance is bounded.** One signed token is one ballot across
+  refreshes, reconnections and extra tabs. Clearing storage or opening a
+  private window earns a new identity. Defeating a determined stuffer needs
+  real accounts, which is a product decision rather than a code one.
+- **The screening is a single process.** The journal survives restarts, but
+  there is no horizontal scale and no CDN; segments are served directly by the
+  app. A real audience needs a CDN in front of `/segments`.
+- Cutaway coverage is per-location and must be generated per beat before a
   live screening; the library raises rather than stalling when exhausted.
 - Speech-rate budgeting assumes the three configured ElevenLabs voices. A new
-  voice needs re-measuring (`chars / audio_seconds`) and a new
-  `SPEECH_CHARS_PER_SEC`.
+  voice needs re-measuring and a new `SPEECH_CHARS_PER_SEC`.
 
 ### Fixed since first publication
 
 | Was | Now |
 |---|---|
 | Dialogue overruns warned about *after* paying for audio and video | Validator rejects at authoring time from a measured 15.7 chars/sec budget |
-| Cutaway fallback "specified but not built" | `engine/cutaway.py` + `CutawayLibrary`, wired into `render_scene.py`, failure path tested |
-| `distinctness` silently implied it checked angles | Documents exactly what it cannot see, with the two failed metrics recorded |
+| Cutaway fallback "specified but not built" | `engine/cutaway.py` + `CutawayLibrary`, wired in, failure path tested |
+| `distinctness` silently implied it checked angles | Documents what it cannot see, with both failed metrics recorded |
+| Viewer identity was `id(websocket)` — a recycled memory address | Signed HMAC tokens in `localStorage`; one ballot across tabs and refreshes |
+| A crash lost the entire screening | Append-only fsynced journal, replayed on restart |
+| One 2 Mbps rendition: buffer or nothing on a weak connection | Three-rung ABR ladder with aligned GOPs |
+| Ladder encoding blocked the event loop | `asyncio.to_thread`; responsive in 3-17ms during encodes |
 
 ## License
 
