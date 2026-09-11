@@ -8,6 +8,30 @@ Reference story implementation: *The Signal* — 3 chapters, 9 beats, 3 characte
 
 ---
 
+## Status: verified in demo, not yet end to end
+
+Read this before trusting any number below.
+
+Every live screening so far has run with `--demo`, which replays clips that
+were already rendered. That means the live layer, the render queue, the bitrate
+ladder, the journal and the voting path have all been exercised against real
+clients — but **the full chain has never run in one pass**: showrunner writing
+beats live, renderer producing clips just-in-time, queue meeting real deadlines,
+cutaways covering real misses.
+
+| Layer | Verified how |
+|---|---|
+| Showrunner / validator | real LLM runs, 3 seeds, 0 repairs |
+| Asset factory + QC gates | real generations, numeric gates, pixel-sampled |
+| Single scene render | real renders, ~$1.75/scene, drift measured |
+| Render queue + schedule | **simulated** with measured latencies |
+| Live layer, ladder, journal | real clients, replaying pre-rendered clips |
+| All of it at once | **not yet run** |
+
+The schedule that says "3 slots is the floor" comes from a simulator fed real
+per-clip latencies. It is a model, not an observation. A full 9-beat live run is
+~91 clips and roughly $32; a single beat is ~$3.50 and is the honest next test.
+
 ## Why this exists
 
 Generation is now faster than playback. On fal's MiniMax H3 Max a 5-second 768p clip renders in **~5.7s of inference** — near parity, and faster than realtime for shorter clips. That inverts the interaction loop: instead of asking and waiting, the system speculatively renders both possible futures while the audience watches the current scene and votes.
@@ -605,7 +629,8 @@ cached copy silently freezes a viewer at the moment they connected.
 | M2 — single-branch render chain | **done** |
 | M3 — speculative A/B queue, deadline logic, cutaway fallback | **done** |
 | M4 — live layer: synced HLS, WebSocket voting, canon log UI | **done** |
-| M5 — public screening | next |
+| M5a — one full live run, no `--demo` | next |
+| M5b — public screening (hostname, TLS, CDN, supervision) | after M5a |
 | M6 — learning loop (see below) | planned |
 
 ### The learning loop (M6)

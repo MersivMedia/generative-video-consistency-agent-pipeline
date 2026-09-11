@@ -280,6 +280,27 @@ rate. Any threshold catching speech destroys the weather. A deterministic
 250 Hz low-pass is the honest fallback: it removes vocal intelligibility at a
 known cost in air and rain detail.
 
+## 7.9 State on disk outlives the code that wrote it
+
+A screening that resumes from a journal reused the playlists left behind by the
+previous process. After changing the URL format, unit tests passed on the new
+convention while the running server still served the OLD one — the files on
+disk were written by yesterday's code.
+
+The general shape: any process with durable state has TWO sources of truth
+after a deploy, the code and the artifacts. Derived artifacts must be
+regenerated from restored state on boot, not trusted because they exist.
+
+This is the third time in one project that a unit test and a live server
+disagreed, and the live server was right every time:
+
+- `ffprobe` said the segments were valid; the player could not splice them
+- the queue tests passed; the event loop was frozen by ffmpeg
+- the playlist test passed; the server served a stale file
+
+Rule: after any change to an output format, curl the running server and read
+what it actually returns. Passing tests describe the code, not the deployment.
+
 ## 8. Verify edits actually applied
 
 Several string-replace edits **silently did nothing** — the anchor text had
