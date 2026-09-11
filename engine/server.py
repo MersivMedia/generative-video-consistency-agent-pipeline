@@ -75,9 +75,50 @@ class Server:
         return clips + cutaways
 
     def _publish(self, src: Path, beat: str, kind: str = "shot") -> Segment:
-        """Copy a clip into the stream dir and append it to the playlist."""
-        dest = STREAM / f"seg_{len(self.playlist.segments):04d}.mp4"
-        shutil.copyfile(src, dest)
+        """Remux a clip into an MPEG-TS segment and append it to the playlist.
+
+        The clips are progressive MP4 (ftyp + moov + mdat) — each one a
+        self-contained movie. hls.js cannot splice those into a continuous
+        timeline: it loads the first and then stalls, which shows up as a
+        player that never advances. HLS needs either MPEG-TS segments or fMP4
+        with a shared init segment.
+
+        TS is chosen because it needs no init segment and no per-segment
+        signalling, so a playlist can grow one clip at a time. The remux is
+        stream-copy (no re-encode) and costs ~50ms.
+        """
+        dest = STREAM / f"seg_{len(self.playlist.segments):04d}.ts"
+
+        # Every source clip is its own movie starting at PTS 1.4, so a naive
+        # remux produces segments that ALL start at the same timestamp. The
+        # player sees time jump backwards at each boundary and stalls after the
+        # first segment — the observed "plays briefly, then freezes".
+        #
+        # Fix: stamp each segment with the running offset of the playlist, so
+        # presentation timestamps increase monotonically across the whole
+        # screening, exactly as they would from a single continuous encode.
+        offset = sum(s.seconds for s in self.playlist.segments)
+
+        # The source clips are ~9 Mbps at 1536x672 — a 5.6MB download before
+        # the first frame appears, which is why startup dragged on mobile.
+        # Re-encode to ~2 Mbps at 1280 wide: 5.6MB -> 1.24MB, a 4.5x cut, at
+        # 2.7s of CPU per clip. That fits comfortably inside the ~20s buffer
+        # the scheduler maintains, so it costs latency we already have.
+        #
+        # -g 48 forces a keyframe every 2s so the player can start decoding
+        # partway into a segment instead of waiting for the next one.
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(src),
+             "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "main",
+             "-b:v", "1800k", "-maxrate", "2000k", "-bufsize", "3000k",
+             "-g", "48", "-keyint_min", "48", "-sc_threshold", "0",
+             "-vf", "scale=1280:-2",
+             "-c:a", "aac", "-b:a", "96k", "-ac", "2",
+             "-bsf:v", "h264_mp4toannexb",
+             "-muxdelay", "0", "-muxpreload", "0",
+             "-output_ts_offset", f"{offset:.3f}",
+             "-f", "mpegts", str(dest)],
+            check=True, capture_output=True)
         seg = Segment(path=dest, seconds=probe(dest), beat_id=beat, kind=kind)
         self.playlist.append(seg)
         self.screening.segments.append(seg)
@@ -95,19 +136,23 @@ class Server:
             head_n = beat.get("head_shots", 4)
             tail_n = beat.get("tail_shots", 2)
 
-            # --- publish the head; it plays while voting is open ---------
+            # --- publish the head -----------------------------------------
+            head_start = self.screening.published_seconds
             for _ in range(head_n):
                 self._publish(pool[idx % len(pool)], beat["id"])
                 idx += 1
+            head_seconds = self.screening.published_seconds - head_start
             await self.push()
 
-            head_seconds = sum(
-                s.seconds for s in self.screening.segments[-head_n:])
+            # --- wait until the audience is actually WATCHING this head ----
+            # The render clock and the playhead are different clocks, and they
+            # differ by the whole buffer (20-26s). Opening the vote at publish
+            # time asked the room to decide a scene they had not seen yet, and
+            # closed it before that scene reached the screen. Every vote landed
+            # outside the window. The vote must live on VIEWER time, which is
+            # also what the M3 simulation assumed.
+            await self._sleep_until_playhead(head_start)
 
-            # Voting opens immediately and closes at 40% of the head, leaving
-            # 60% as the tail's render runway. This fraction is the single most
-            # load-bearing timing parameter in the system: at 60%/40% the tail
-            # was structurally unrenderable (9/9 misses at every slot count).
             self.screening.open_vote(beat["id"], [
                 {"id": "A", "label": beat.get("branch_axis", "hold")},
                 {"id": "B", "label": "the other way"},
@@ -119,6 +164,8 @@ class Server:
             await self.push()
 
             # --- tail: rendered knowing the winner, on the critical path ---
+            # Runway is the remaining 60% of the head as WATCHED, which is the
+            # 12s the simulator predicted at head_shots=4.
             for _ in range(tail_n):
                 self._publish(pool[idx % len(pool)], beat["id"])
                 idx += 1
@@ -137,6 +184,12 @@ class Server:
             if left <= 0:
                 return
             await asyncio.sleep(min(0.5, left))
+            await self.push()
+
+    async def _sleep_until_playhead(self, position: float) -> None:
+        """Block until the audience's playhead reaches `position` seconds."""
+        while self.screening.playhead() < position:
+            await asyncio.sleep(0.25)
             await self.push()
 
     async def _sleep_until_buffer(self, target: float) -> None:
@@ -179,7 +232,7 @@ class Server:
             p = STREAM / name
             if not p.exists():
                 return Response(status_code=404)
-            return FileResponse(p, media_type="video/mp4")
+            return FileResponse(p, media_type="video/mp2t")
 
         @app.get("/state")
         async def state():

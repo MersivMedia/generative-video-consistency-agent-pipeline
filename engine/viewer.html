@@ -19,6 +19,10 @@
   .sub{color:var(--dim);font-size:12px;margin-bottom:18px}
   video{width:100%;aspect-ratio:2.39/1;background:#000;display:block;
         border:1px solid var(--line)}
+  #unmute{display:block;width:100%;text-align:center;padding:13px;
+    background:var(--amber);color:#0b0d10;font-weight:600;letter-spacing:.06em;
+    border:none;cursor:pointer;touch-action:manipulation}
+  #unmute.hide{display:none}
   .bar{display:flex;gap:18px;flex-wrap:wrap;align-items:center;
        padding:10px 12px;border:1px solid var(--line);border-top:none;
        font-size:12px;color:var(--dim)}
@@ -34,7 +38,7 @@
            color:var(--dim);margin:0 0 12px;font-weight:500}
   .opts{display:grid;gap:10px;grid-template-columns:1fr 1fr}
   @media(max-width:680px){.opts{grid-template-columns:1fr}}
-  button{all:unset;cursor:pointer;padding:14px 16px;border:1px solid var(--line);
+  button{all:unset;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;padding:14px 16px;border:1px solid var(--line);
          background:#0c1014;transition:.15s;position:relative;overflow:hidden}
   button:hover:not(:disabled){border-color:var(--amber)}
   button:disabled{cursor:default;opacity:.5}
@@ -59,12 +63,14 @@
   <div class="sub" id="sub">connecting…</div>
 
   <video id="v" playsinline muted autoplay></video>
+  <button id="unmute">Tap for sound</button>
   <div class="bar">
     <span><span class="dot" id="dot"></span><b id="status">offline</b></span>
     <span>playhead <b id="ph">0.0s</b></span>
     <span>buffer <b id="buf">0.0s</b></span>
     <span>watching <b id="viewers">0</b></span>
     <span>beat <b id="beat">—</b></span>
+    <span>video <b id="pstat">starting…</b></span>
   </div>
 
   <div class="vote" id="vote">
@@ -84,20 +90,64 @@ const $ = id => document.getElementById(id);
 let mine = null, lastBeat = null;
 
 // ---- playback -------------------------------------------------------
-// The server owns the playhead. We never seek on our own; we correct toward
-// the server's position when we drift, because a shared vote is meaningless
-// if viewers are looking at different moments.
+// The server owns the playhead, but correcting toward it must be RARE. The
+// previous version seeked whenever drift exceeded 2s, and state arrives twice
+// a second — so the player seeked, began buffering, got another push, and
+// seeked again before a frame ever rendered. A seek loop looks exactly like
+// "no video at all".
+//
+// Now: never seek during startup, allow a wide tolerance, and rate-limit
+// corrections to once every 10s. Drift of a few seconds is invisible to an
+// audience; a stalled player is not.
 const video = $('v');
 const SRC = '/stream/index.m3u8';
+let started = false, lastSeek = 0;
+
+video.addEventListener('playing', () => { started = true; note('playing'); });
+video.addEventListener('waiting', () => note('buffering'));
+video.addEventListener('error',   () => note('video error'));
+
+function note(t){ const e=$('pstat'); if(e) e.textContent=t; }
+
 if (Hls.isSupported()) {
-  const hls = new Hls({ liveSyncDurationCount: 2, lowLatencyMode: true });
-  hls.loadSource(SRC); hls.attachMedia(video);
-  hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(()=>{}));
-  // The playlist grows as clips render; a 404 early on is normal, not fatal.
-  hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) hls.startLoad(); });
+  // Desktop and Android: hls.js over Media Source Extensions.
+  const hls = new Hls({ enableWorker: true, backBufferLength: 30 });
+  hls.loadSource(SRC);
+  hls.attachMedia(video);
+  hls.on(Hls.Events.MANIFEST_PARSED, () => {
+    note('manifest ok');
+    video.play().catch(e => note('autoplay blocked — tap to play'));
+  });
+  hls.on(Hls.Events.ERROR, (_, d) => {
+    note('hls: ' + d.details);
+    if (!d.fatal) return;
+    // The playlist grows as clips render, so early 404s and gaps are normal.
+    if (d.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+    else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+  });
 } else {
+  // iOS Safari has no MSE for this: it plays HLS natively from src.
   video.src = SRC;
+  note('native hls');
+  video.play().catch(() => note('tap to play'));
 }
+
+// Autoplay is only permitted while muted, so the stream starts silent and one
+// deliberate tap turns the sound on. This is a browser policy, not a bug: an
+// unmuted autoplay is blocked outright, which would mean no picture either.
+const unmute = $('unmute');
+unmute.addEventListener('pointerdown', ev => {
+  ev.preventDefault();
+  video.muted = false;
+  video.volume = 1;
+  video.play().catch(()=>{});
+  unmute.classList.add('hide');
+});
+
+// A tap anywhere also starts playback if autoplay was blocked entirely.
+document.body.addEventListener('click', () => {
+  if (video.paused) video.play().catch(()=>{});
+});
 
 // ---- state ----------------------------------------------------------
 const ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/live');
@@ -115,8 +165,12 @@ ws.onmessage = e => {
   $('viewers').textContent = s.viewers;
   $('beat').textContent = s.beat || '—';
 
-  // resync if we have drifted more than 2s from the authoritative playhead
-  if (!video.paused && Math.abs(video.currentTime - s.playhead) > 2) {
+  // Correct drift only once playback is genuinely running, only when far out
+  // of sync, and at most once every 10 seconds.
+  const now = Date.now();
+  if (started && !video.paused && video.readyState >= 3 &&
+      now - lastSeek > 10000 && Math.abs(video.currentTime - s.playhead) > 8) {
+    lastSeek = now;
     try { video.currentTime = s.playhead; } catch (_) {}
   }
 
@@ -126,17 +180,40 @@ ws.onmessage = e => {
   box.classList.toggle('live', s.vote_open);
   $('clock').textContent = s.vote_open ? s.vote_remaining.toFixed(1)+'s' : 'closed';
 
+  // Buttons are built ONCE per beat and then UPDATED in place. Rebuilding
+  // innerHTML on every state push (which arrives ~2x/second) destroyed the
+  // element mid-tap, so a press landed on a node that no longer existed and
+  // the vote was swallowed — the observed "had to press it a few times".
   const total = Object.values(s.tally).reduce((a,b)=>a+b,0) || 1;
-  $('opts').innerHTML = '';
-  (s.choices||[]).forEach(c => {
-    const n = s.tally[c.id] || 0, pct = Math.round(n/total*100);
-    const b = document.createElement('button');
+  const opts = $('opts');
+  if (opts.dataset.beat !== String(s.beat)) {
+    opts.dataset.beat = String(s.beat);
+    opts.innerHTML = '';
+    (s.choices||[]).forEach(c => {
+      const b = document.createElement('button');
+      b.dataset.choice = c.id;
+      b.innerHTML = `<span class="fill"></span>
+        <span class="lbl"><span>${c.label}</span><span class="pct"></span></span>`;
+      // pointerdown, not click: on touch devices click waits ~300ms for a
+      // possible double-tap, which is long enough for the next state push.
+      b.addEventListener('pointerdown', ev => {
+        ev.preventDefault();
+        if (b.disabled) return;
+        mine = c.id;
+        opts.querySelectorAll('button').forEach(x =>
+          x.classList.toggle('mine', x.dataset.choice === c.id));
+        ws.send(JSON.stringify({type:'vote', choice:c.id}));
+      });
+      opts.appendChild(b);
+    });
+  }
+  opts.querySelectorAll('button').forEach(b => {
+    const id = b.dataset.choice, n = s.tally[id] || 0;
+    const pct = Math.round(n/total*100);
     b.disabled = !s.vote_open;
-    if (mine === c.id) b.classList.add('mine');
-    b.innerHTML = `<span class="fill" style="width:${pct}%"></span>
-      <span class="lbl"><span>${c.label}</span><span class="pct">${n} · ${pct}%</span></span>`;
-    b.onclick = () => { mine = c.id; ws.send(JSON.stringify({type:'vote',choice:c.id})); };
-    $('opts').appendChild(b);
+    b.classList.toggle('mine', mine === id);
+    b.querySelector('.fill').style.width = pct + '%';
+    b.querySelector('.pct').textContent = `${n} · ${pct}%`;
   });
 
   $('canon').innerHTML = (s.canon||[]).slice().reverse().map(c =>

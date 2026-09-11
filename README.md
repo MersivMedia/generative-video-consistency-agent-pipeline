@@ -46,6 +46,7 @@ engine/simulate.py      screening simulator — does the buffer hold?
 engine/live.py          screening state, HLS playlist, vote tally, viewer hub
 engine/server.py        FastAPI + WebSocket screening server
 engine/viewer.html      the audience page (no build step)
+engine/audio_qc.py      speech detector — MEASURED AND REJECTED, kept as record
 tests/test_render_queue.py  8 behavioural tests (fake clock, deterministic)
 tests/test_live.py      end-to-end: concurrent viewers, real votes
 engine/render_scene.py  canon scene -> video via reference-to-video, ffmpeg mux
@@ -460,6 +461,60 @@ canon log:
 
 The 3/2 split was recorded exactly, and the decision is permanent in the canon
 log with its vote count and playhead position.
+
+### Six bugs that only a real device found
+
+Every one of these passed a component check and failed in a browser. The
+component checks were not wrong, they were answering a narrower question than
+"can someone watch this".
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Page never loaded | `ufw` allowed only 80/443/22; port dropped silently | open the port, or proxy through the existing Caddy |
+| No playback at all | segments were progressive MP4 (`ftyp+moov+mdat`) — one self-contained movie per file, which hls.js cannot splice | remux to MPEG-TS on publish, stream-copy, ~50ms |
+| Played briefly then froze | every segment started at PTS 1.4, so time jumped backwards at each boundary | `-output_ts_offset` with the playlist's running offset |
+| Still no video | **my own resync logic**: seek on >2s drift, evaluated twice a second, so the player re-seeked before a frame could render | seek only when playing, drift >8s, max once per 10s |
+| Vote needed several taps | `innerHTML` rebuilt the buttons on every state push, destroying the element mid-tap | build once per beat, update in place, `pointerdown` not `click` |
+| Slow start, no sound | 9 Mbps segments (5.6MB before frame one); `muted` is mandatory for autoplay | re-encode to ~2 Mbps / 1280 wide + an explicit unmute button |
+
+`ffprobe` said the files were valid video, and they were. Valid video is not a
+valid HLS timeline, and a valid timeline is not a working player. The only
+check that meant anything was pointing a real HLS client at the real URL:
+
+```bash
+ffmpeg -v error -i "http://HOST:PORT/stream/index.m3u8" -t 15 -f null -
+```
+
+### Audio: the model invents speech unless forbidden
+
+H3 Max always returns an audio track and exposes no mute parameter, so with
+nothing forbidding speech it generates muttering, crowd murmur and voice-over
+across shots that have no dialogue at all. The story's `narration` field is
+deliberately never sent to the model — it is authorial subtext, not spoken
+text — so any voice heard on a silent shot is pure invention.
+
+Every shot prompt now carries an explicit `AUDIO:` directive: diegetic
+background only (weather, sea, footsteps, room tone), and no speech,
+voice-over, narrator, muttering, whispering, singing or crowd voices.
+Dialogue-free shots add "nobody talks, no lips move to form words".
+
+**Division of labour: the model owns background, ElevenLabs owns every spoken
+word** — delivered to the model as reference audio so it has a voice to
+lip-sync rather than a vacuum to fill.
+
+A speech *detector* was built as a safety net and **failed on labelled data**:
+
+```
+shot_01 (real speech)    0.155
+shot_02 (real speech)    0.173
+rain    (pure ambience)  0.228   <- higher than every speech clip
+```
+
+Rain modulates at almost exactly syllable rate (2-8 Hz), so any threshold that
+catches speech destroys the weather. Shipped disabled with the numbers in the
+docstring, for the same reason as the angle metric: a gate that silently
+mis-scores is worse than an acknowledged gap. `--lowpass` at 250 Hz remains as
+a deterministic opt-in fallback.
 
 ### Buffer health in production
 

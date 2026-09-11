@@ -127,6 +127,25 @@ def shot_prompt(shot: dict, style: str, chars: dict | None = None,
                           for d in lines)
         p += f"\n\nDIALOGUE (spoken on camera): {spoken}"
 
+    # H3 Max ALWAYS generates an audio track and has no mute parameter, so if
+    # nothing forbids speech it invents its own — muttering, crowd murmur, and
+    # voice-over narration laid over shots that have no dialogue at all. The
+    # story's `narration` field is deliberately NOT sent to the model (it is
+    # authorial subtext, not something a character says), so any speech heard
+    # on a silent shot is pure model invention.
+    #
+    # Division of labour: the model owns DIEGETIC BACKGROUND only; every spoken
+    # word comes from ElevenLabs and reaches the model as reference audio.
+    p += ("\n\nAUDIO: generate DIEGETIC BACKGROUND SOUND ONLY — weather, sea, "
+          "wind, rain on surfaces, footsteps, cloth, doors, machinery, room "
+          "tone. Absolutely NO speech, NO dialogue, NO voice-over, NO narrator, "
+          "NO muttering, NO whispering, NO singing, NO humming, NO crowd "
+          "voices. No human vocal sound of any kind")
+    if not shot.get("dialogue"):
+        p += (". This shot is SILENT of speech: nobody talks, no lips move to "
+              "form words, no off-screen voice is heard")
+    p += "."
+
     # Interior/exterior incoherence: the model put a character inside a doorway
     # with the exterior landscape behind her. State camera side explicitly.
     if shot.get("camera_side"):

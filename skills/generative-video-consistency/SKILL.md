@@ -224,6 +224,62 @@ Rules that make it work:
 - Test the failure path by monkeypatching the provider call to throw. The
   fallback is the one code path that only ever runs on a bad day.
 
+## 7.7 Component checks answer a narrower question than you think
+
+Shipping a live video layer produced six bugs in a row that ALL passed a
+component check first. The checks were not wrong — they were answering
+something narrower than "can a person use this".
+
+| I verified | It did not prove |
+|---|---|
+| `ffprobe` reports valid h264+aac | the files form a spliceable HLS timeline |
+| segments have monotonic timestamps | a player renders a frame |
+| the stream decodes in ffmpeg | the client-side JS is not fighting it |
+| votes accepted over a WebSocket | a finger on glass can land one |
+
+The bug I should be most embarrassed by was my own: a "correct drift toward the
+server playhead" rule that fired on >2s error, evaluated twice a second. The
+player seeked, began buffering, received another push and seeked again before a
+single frame rendered. Permanent buffering, indistinguishable from a dead
+stream — and it was in the code I had described as the careful part.
+
+Rules:
+
+- Test with the REAL client at the REAL URL before claiming a path works:
+  `ffmpeg -i "http://host/stream/index.m3u8" -t 15 -f null -`
+- Any correction loop needs a rate limit and a generous deadband. Drift of a
+  few seconds is invisible; a stall is not.
+- Never rebuild interactive DOM on a high-frequency push. Build once, update in
+  place, and use `pointerdown` — mobile `click` waits ~300ms for double-tap
+  disambiguation, long enough to be destroyed by the next render.
+- Serve what the device can afford. Renderer output was 9 Mbps; phones needed
+  ~2 Mbps. A 4.5x transcode costing 2.7s of CPU per clip hides inside a buffer
+  that already exists.
+
+## 7.8 The model fills audio silence with invented speech
+
+Video models that return audio generally offer no way to mute it, and an
+unconstrained audio track gets filled with muttering, crowd murmur and
+voice-over narration on shots with no dialogue whatsoever.
+
+State the division of labour in every prompt: **the model owns diegetic
+background only** (weather, sea, footsteps, cloth, machinery, room tone) and
+**no speech, voice-over, narrator, muttering, whispering, singing or crowd
+voices**. Dialogue-free shots get an extra "nobody talks, no lips move to form
+words". All real dialogue comes from a TTS provider and is handed to the model
+as reference audio, so it has a voice to lip-sync instead of a vacuum to fill.
+
+Do not send authorial narration/subtext fields to the model. They read as lines
+to be performed.
+
+And a speech detector is not the safety net it appears to be. Mid-band energy
+modulated at syllable rate (2-8 Hz) sounds like a clean discriminator and is
+not — measured against labelled clips, rain scored 0.228 while real speech
+scored 0.106-0.173, because raindrops and gusts modulate at exactly syllable
+rate. Any threshold catching speech destroys the weather. A deterministic
+250 Hz low-pass is the honest fallback: it removes vocal intelligibility at a
+known cost in air and rain detail.
+
 ## 8. Verify edits actually applied
 
 Several string-replace edits **silently did nothing** — the anchor text had
