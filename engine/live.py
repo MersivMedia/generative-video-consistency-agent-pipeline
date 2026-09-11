@@ -196,7 +196,7 @@ class Playlist:
             if s.kind == "cutaway":
                 lines.append("#EXT-X-DISCONTINUITY")
             lines.append(f"#EXTINF:{s.seconds:.3f},")
-            lines.append(f"/segments/{s.path.name}")
+            lines.append(f"../segments/{s.path.name}")
         if self.finished:
             lines.append("#EXT-X-ENDLIST")
         out = self.root / "index.m3u8"

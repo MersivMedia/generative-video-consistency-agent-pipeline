@@ -30,13 +30,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect  # noqa: E402
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.responses import FileResponse, HTMLResponse, Response  # noqa: E402
 import uvicorn  # noqa: E402
 
 import identity  # noqa: E402
 import ladder  # noqa: E402
 from live import Hub, Playlist, Screening, Segment, VOTE_CLOSE_FRAC  # noqa: E402
+
+import re
+
+# Playlists change on every publish; a cached copy freezes a viewer wherever
+# the stream was when they connected. Segments are immutable once written.
+PLAYLIST_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Access-Control-Allow-Origin": "*",
+}
+SEG_NAME = re.compile(r"seg_\d{4}\.ts")
+RUNG_NAMES = frozenset(r.name for r in ladder.LADDER)
 
 ROOT = Path(__file__).resolve().parent.parent
 STREAM = ROOT / "renders" / "_live"
@@ -67,6 +78,7 @@ class Server:
         # audience chose is the product's memory, so it is append-only and
         # fsynced rather than snapshotted.
         self.journal = identity.Journal(STREAM / "screening.jsonl")
+        self.limiter = identity.TokenLimiter()
         resumed = identity.restore(self.screening, self.journal, STREAM)
         self.resumed = resumed["segments"] > 0
         if self.resumed:
@@ -76,6 +88,13 @@ class Server:
                      if resumed["missing"] else ""))
             self.playlist = Playlist(STREAM)
             self.playlist.segments = list(self.screening.segments)
+            # Playlists on disk were written by the previous process — possibly
+            # by an older build with different URL conventions. Regenerate them
+            # from restored state so a resumed screening never serves a stale
+            # playlist format.
+            for r in ladder.LADDER:
+                ladder.write_variant(STREAM, r, self.screening.segments, False)
+            ladder.write_master(STREAM)
         else:
             for old in STREAM.glob("*.ts"):
                 old.unlink()
@@ -255,7 +274,7 @@ class Server:
                 return Response(status_code=404)
             return Response(f.read_text(),
                             media_type="application/vnd.apple.mpegurl",
-                            headers={"Cache-Control": "no-store"})
+                            headers=PLAYLIST_HEADERS)
 
         @app.api_route("/stream/{name}.m3u8", methods=["GET", "HEAD"])
         async def variant(name: str):
@@ -273,23 +292,38 @@ class Server:
 
         @app.api_route("/segments/{rung}/{name}", methods=["GET", "HEAD"])
         async def segment(rung: str, name: str):
+            # Path traversal guard: these come straight off the wire, and
+            # "../../etc/passwd" would otherwise resolve outside STREAM.
+            if not SEG_NAME.fullmatch(name) or rung not in RUNG_NAMES:
+                return Response(status_code=404)
             p = STREAM / rung / name
             if not p.exists():
                 return Response(status_code=404)
-            return FileResponse(p, media_type="video/mp2t")
+            # A written segment never changes, so it is immutable and can be
+            # cached forever — this is what makes a CDN worth putting in front
+            # of the app. Playlists are the opposite and must never be cached.
+            return FileResponse(p, media_type="video/mp2t", headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "Access-Control-Allow-Origin": "*",
+            })
 
         @app.get("/token")
-        async def token():
-            """Mint a signed viewer token.
+        async def token(request: Request):
+            """Mint a signed viewer token, rate-limited per source address.
 
             NOT login. A screening is anonymous; this only has to count one
             person once. Identity previously came from id(websocket) — a memory
             address, which CPython recycles aggressively (2000 short-lived
-            objects yielded 2 distinct ids in measurement). That let a
-            reconnecting viewer inherit a departed viewer's ballot, and did not
-            survive a refresh.
+            objects yielded 3 distinct ids in measurement). That let a
+            reconnecting viewer inherit a departed viewer's ballot.
+
+            The per-IP cap means clearing storage in a loop no longer mints
+            unlimited ballots; past the cap the same identity comes back.
             """
-            return {"token": identity.mint()}
+            ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                  or (request.client.host if request.client else "unknown"))
+            tok, fresh = self.limiter.issue(ip)
+            return {"token": tok, "fresh": fresh}
 
         @app.get("/state")
         async def state():

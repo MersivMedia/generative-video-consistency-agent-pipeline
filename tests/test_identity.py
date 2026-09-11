@@ -152,6 +152,56 @@ def test_ladder_rungs_share_gop_and_declare_peak_bandwidth():
           f"lowest-first, peak bandwidth declared")
 
 
+def test_token_limiter_caps_minting_per_source():
+    """Clearing storage in a loop must stop being free."""
+    lim = identity.TokenLimiter(per_ip=3)
+    toks, fresh_flags = [], []
+    for _ in range(10):
+        t, fresh = lim.issue("203.0.113.9")
+        toks.append(t)
+        fresh_flags.append(fresh)
+    assert len(set(toks)) == 3, f"expected 3 identities, got {len(set(toks))}"
+    assert fresh_flags[:3] == [True, True, True]
+    assert not any(fresh_flags[3:]), "cap did not engage"
+
+    # a different source is unaffected
+    other, fresh = lim.issue("198.51.100.4")
+    assert fresh and other not in toks
+    s = lim.stats()
+    assert s["sources"] == 2 and s["at_cap"] == 1, s
+    print(f"  PASS 10 requests from one IP yielded 3 identities; "
+          f"stats {s}")
+
+
+def test_limiter_recycled_tokens_still_verify():
+    """A recycled token must remain a valid identity, not a broken one."""
+    lim = identity.TokenLimiter(per_ip=1)
+    first, _ = lim.issue("203.0.113.9")
+    again, fresh = lim.issue("203.0.113.9")
+    assert again == first and not fresh
+    assert identity.verify(again) is not None
+    print("  PASS recycled token is the same valid identity")
+
+
+def test_playlists_use_relative_urls():
+    """Absolute URLs break prefix mounting and CDN fronting."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        master = ladder.write_master(root).read_text()
+        assert "/stream/" not in master, master
+        assert "low.m3u8" in master
+
+        class Seg:
+            seconds = 5.2
+            kind = "shot"
+        variant = ladder.write_variant(
+            root, ladder.LADDER[0], [Seg(), Seg()], False).read_text()
+        assert "\n/segments/" not in variant, variant
+        assert "../segments/low/seg_0000.ts" in variant
+    print("  PASS master and variant playlists are prefix-independent")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     print(f"running {len(tests)} identity/persistence/ladder tests\n")

@@ -100,7 +100,11 @@ let mine = null, lastBeat = null;
 // corrections to once every 10s. Drift of a few seconds is invisible to an
 // audience; a stalled player is not.
 const video = $('v');
-const SRC = '/stream/master.m3u8';   // ABR ladder: low / mid / high
+// Everything is derived from the page's own URL so the app can be mounted at
+// any prefix (https://host/thisway/) behind a reverse proxy or CDN without a
+// rebuild. An absolute '/stream/...' would break the moment it is not at root.
+const BASE = location.pathname.replace(/\/[^/]*$/, '/');
+const SRC = BASE + 'stream/master.m3u8';   // ABR ladder: low / mid / high
 let started = false, lastSeek = 0;
 
 video.addEventListener('playing', () => { started = true; note('playing'); });
@@ -158,12 +162,12 @@ let ws;
   let tok = localStorage.getItem('thisway_token');
   if (!tok) {
     try {
-      tok = (await (await fetch('/token')).json()).token;
+      tok = (await (await fetch(BASE + 'token')).json()).token;
       localStorage.setItem('thisway_token', tok);
     } catch (_) { tok = ''; }
   }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/live?token=${encodeURIComponent(tok||'')}`);
+  ws = new WebSocket(`${proto}://${location.host}${BASE}live?token=${encodeURIComponent(tok||'')}`);
   wire(ws);
 })();
 

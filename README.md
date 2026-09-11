@@ -49,6 +49,7 @@ engine/viewer.html      the audience page (no build step)
 engine/audio_qc.py      speech detector — MEASURED AND REJECTED, kept as record
 engine/identity.py      signed viewer tokens + append-only screening journal
 engine/ladder.py        adaptive bitrate ladder (low/mid/high), aligned GOPs
+docs/DEPLOYMENT.md      TLS, CDN, supervision — what a public screening needs
 tests/test_identity.py  8 tests: identity, forgery, replay, ladder alignment
 tests/test_render_queue.py  8 behavioural tests (fake clock, deterministic)
 tests/test_live.py      end-to-end: concurrent viewers, real votes
@@ -640,13 +641,16 @@ Long-run image quality comes from **better locks, not better prompts**: accumula
 - **Invented speech is prevented by prompt, not by gate.** The audio directive
   works, but `audio_qc.py` proves the detector that would enforce it does not
   discriminate (rain modulates at syllable rate). A `--lowpass` fallback exists.
-- **Sybil resistance is bounded.** One signed token is one ballot across
-  refreshes, reconnections and extra tabs. Clearing storage or opening a
-  private window earns a new identity. Defeating a determined stuffer needs
-  real accounts, which is a product decision rather than a code one.
-- **The screening is a single process.** The journal survives restarts, but
-  there is no horizontal scale and no CDN; segments are served directly by the
-  app. A real audience needs a CDN in front of `/segments`.
+- **Sybil resistance is bounded, by design.** One signed token is one ballot
+  across refreshes, reconnections and extra tabs, and a per-IP mint cap means
+  clearing storage in a loop returns an identity already held rather than a new
+  one. Someone with many source addresses can still stuff a ballot; stopping
+  that needs real accounts, which is a product decision, not a code one. The
+  cap is deliberately generous (8/source) because a lecture hall behind one NAT
+  is a legitimate crowd.
+- **One process, one screening.** The journal survives restarts and the CDN
+  handles fan-out, but there is no horizontal scale: two screenings means two
+  processes. No moderation, no auth, no admin surface.
 - Cutaway coverage is per-location and must be generated per beat before a
   live screening; the library raises rather than stalling when exhausted.
 - Speech-rate budgeting assumes the three configured ElevenLabs voices. A new
@@ -663,6 +667,11 @@ Long-run image quality comes from **better locks, not better prompts**: accumula
 | A crash lost the entire screening | Append-only fsynced journal, replayed on restart |
 | One 2 Mbps rendition: buffer or nothing on a weak connection | Three-rung ABR ladder with aligned GOPs |
 | Ladder encoding blocked the event loop | `asyncio.to_thread`; responsive in 3-17ms during encodes |
+| No HTTPS, app port exposed directly | Caddy reverse proxy with WebSocket upgrade — see `docs/DEPLOYMENT.md` |
+| Segments uncacheable, so no CDN was possible | Immutable segments (`max-age=31536000`), `no-store` playlists, open CORS |
+| Absolute playlist URLs broke prefix mounting | Relative URLs + client paths derived from `location.pathname` |
+| Unlimited token minting | Per-IP cap; 12 requests from one source yield 8 identities |
+| Segment route took an unvalidated path | Regex + rung allowlist; traversal attempts return 404 |
 
 ## License
 

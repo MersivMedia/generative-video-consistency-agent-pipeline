@@ -82,6 +82,46 @@ def verify(token: str | None) -> str | None:
     return vid if hmac.compare_digest(sig, want) else None
 
 
+class TokenLimiter:
+    """Per-IP cap on how many identities one source may mint.
+
+    Signed tokens stop the ACCIDENTAL duplicate — refresh, reconnect, second
+    tab — which is what actually corrupts a live tally. They do nothing against
+    someone who clears storage in a loop, because minting is free.
+
+    This makes it not free. One source address gets a bounded number of
+    identities per screening; beyond that it is handed a token it already has.
+    Deliberately NOT a ban: a lecture hall or a household behind one NAT is a
+    legitimate crowd, so the cap is generous and the failure mode is "you share
+    a ballot with the other people on your router", not "you are locked out".
+
+    Defeating this needs many source addresses, which is a different threat
+    model and needs real accounts. What it buys is that ballot stuffing costs
+    infrastructure rather than a keyboard shortcut.
+    """
+
+    def __init__(self, per_ip: int = 8):
+        self.per_ip = per_ip
+        self._issued: dict[str, list[str]] = {}
+
+    def issue(self, ip: str) -> tuple[str, bool]:
+        """Return (token, fresh). `fresh` is False when the cap recycled one."""
+        seen = self._issued.setdefault(ip, [])
+        if len(seen) >= self.per_ip:
+            # Hand back the oldest identity from this source rather than a new
+            # one. The client cannot tell, and the tally stops inflating.
+            return seen[0], False
+        tok = mint()
+        seen.append(tok)
+        return tok, True
+
+    def stats(self) -> dict:
+        return {"sources": len(self._issued),
+                "issued": sum(len(v) for v in self._issued.values()),
+                "at_cap": sum(1 for v in self._issued.values()
+                              if len(v) >= self.per_ip)}
+
+
 class Journal:
     """Append-only screening log with replay.
 

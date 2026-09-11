@@ -110,7 +110,9 @@ def write_master(root: Path) -> Path:
             f"#EXT-X-STREAM-INF:BANDWIDTH={r.bandwidth},"
             f'RESOLUTION={r.width}x{int(r.width / 2.2857) // 2 * 2},'
             f'CODECS="avc1.4d401f,mp4a.40.2"')
-        lines.append(f"/stream/{r.name}.m3u8")
+        # Relative: resolved against the master playlist's own URL, so the app
+        # works under any path prefix and behind a CDN without body rewriting.
+        lines.append(f"{r.name}.m3u8")
     out = root / "master.m3u8"
     out.write_text("\n".join(lines) + "\n")
     return out
@@ -126,7 +128,7 @@ def write_variant(root: Path, rung: Rung, segments: list, finished: bool,
         if getattr(seg, "kind", "shot") == "cutaway":
             lines.append("#EXT-X-DISCONTINUITY")
         lines.append(f"#EXTINF:{seg.seconds:.3f},")
-        lines.append(f"/segments/{rung.name}/seg_{i:04d}.ts")
+        lines.append(f"../segments/{rung.name}/seg_{i:04d}.ts")
     if finished:
         lines.append("#EXT-X-ENDLIST")
     out = root / f"{rung.name}.m3u8"
